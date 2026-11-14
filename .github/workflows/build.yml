@@ -10,8 +10,6 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Find and select Xcode with iOS SDK
         run: |
@@ -23,12 +21,14 @@ jobs:
           sudo xcode-select -s "$XCODE_PATH"
           xcodebuild -showsdks | grep -i ios
 
-      - name: Build llama.cpp xcframework
+      - name: Install pinned llama.cpp XCFramework
         run: |
-          cd llama.cpp
-          chmod +x build-xcframework.sh
-          ./build-xcframework.sh
-          ls -la build-apple/llama.xcframework/
+          test "$(git rev-parse HEAD:llama.cpp)" = "4d828bd1ab52773ba9570cc008cf209eb4a8b2f5"
+          curl --fail --location --retry 3 --output llama-xcframework.zip \
+            https://github.com/ggml-org/llama.cpp/releases/download/b8189/llama-b8189-xcframework.zip
+          echo "eb535c182767be4ab362720cc997273da87e6cbc2a3b0f98f2ff958dc5f30c67  llama-xcframework.zip" | shasum -a 256 -c -
+          unzip -q llama-xcframework.zip -d llama.cpp
+          test -f llama.cpp/build-apple/llama.xcframework/Info.plist
 
       - name: Build iOS app
         run: |

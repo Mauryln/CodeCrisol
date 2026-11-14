@@ -57,7 +57,7 @@ The app builds on GitHub Actions using a macOS runner with Xcode:
 3. Download the IPA artifact from the Actions run
 4. Sideload to your device via AltStore
 
-The workflow builds the llama.cpp xcframework from source, then compiles the iOS app. No local macOS machine needed.
+The workflow verifies the SHA-256 of the official llama.cpp XCFramework for the pinned submodule commit and compiles the iOS app on a macOS runner.
 
 ## Known Limitations
 
