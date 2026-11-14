@@ -21,6 +21,11 @@ class HTTPServer {
         listener?.newConnectionHandler = { [weak self] conn in
             self?.handleConnection(conn)
         }
+        listener?.stateUpdateHandler = { [weak llamaState] state in
+            if case .failed(let error) = state {
+                Task { @MainActor in llamaState?.serverFailed(error) }
+            }
+        }
         listener?.start(queue: .global(qos: .userInitiated))
         print("HTTP Server started on port \(port)")
     }
@@ -119,6 +124,7 @@ class HTTPServer {
 
         let method = parts[0]
         let path = parts[1]
+        DiagnosticLog.shared.write("\(method) \(String(path.prefix(160)))", source: "API")
 
         // CORS headers for all responses
         if method == "OPTIONS" {
@@ -147,10 +153,12 @@ class HTTPServer {
     }
 
     private func handleModels(connection: NWConnection) {
-        let response = """
-        {"object":"list","data":[{"id":"local","object":"model","created":0,"owned_by":"local"}]}
-        """
-        sendResponse(connection: connection, status: "200 OK", body: response, contentType: "application/json")
+        Task { @MainActor in
+            let models: [[String: Any]] = self.llamaState?.hasModel == true
+                ? [["id": "local", "object": "model", "created": 0, "owned_by": "local"]] : []
+            self.sendResponse(connection: connection, status: "200 OK",
+                              body: self.encode(["object": "list", "data": models]), contentType: "application/json")
+        }
     }
 
     private func handleChatCompletion(body: Data, connection: NWConnection) {
@@ -216,7 +224,7 @@ class HTTPServer {
                 try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
             }
             do {
-                let usage = try await llamaState.generate(text: prompt, maxTokens: maxTokens, parseSpecial: true) { piece in
+                let usage = try await llamaState.generate(text: prompt, maxTokens: maxTokens, parseSpecial: true, fromServer: true) { piece in
                     if stream {
                         try await sendChunk(["content": piece])
                     } else {
@@ -258,6 +266,8 @@ class HTTPServer {
                     (status, message) = ("503 Service Unavailable", "Load a model on the iPad.")
                 case CompletionError.busy:
                     (status, message) = ("429 Too Many Requests", "The iPad is already running inference.")
+                case is CancellationError:
+                    (status, message) = ("409 Conflict", "Generation cancelled on the iPad.")
                 case LlamaError.contextExceeded, LlamaError.invalidPrompt:
                     (status, message) = ("400 Bad Request", "Prompt is empty or exceeds the 4096-token context. Start a shorter session.")
                 default:
@@ -289,6 +299,7 @@ class HTTPServer {
     }
 
     private func sendError(_ connection: NWConnection, status: String, message: String) {
+        DiagnosticLog.shared.write("\(status) · \(message)", source: "API")
         sendResponse(connection: connection, status: status,
                      body: encode(["error": ["message": message]]), contentType: "application/json")
     }

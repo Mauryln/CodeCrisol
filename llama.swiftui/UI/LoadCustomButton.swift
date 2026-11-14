@@ -2,43 +2,20 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LoadCustomButton: View {
-    @ObservedObject private var llamaState: LlamaState
+    @ObservedObject var llamaState: LlamaState
     @State private var showFileImporter = false
 
-    init(llamaState: LlamaState) {
-        self.llamaState = llamaState
-    }
-
     var body: some View {
-        VStack {
-            Button(action: {
-                showFileImporter = true
-            }) {
-                Text("Load Custom Model")
-            }
-        }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [UTType(filenameExtension: "gguf", conformingTo: .data)!],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let files):
-                files.forEach { file in
-                    let gotAccess = file.startAccessingSecurityScopedResource()
-                    if !gotAccess { return }
-
-                    do {
-                        try llamaState.loadModel(modelUrl: file.absoluteURL)
-                    } catch let err {
-                        print("Error: \(err.localizedDescription)")
-                    }
-
-                    file.stopAccessingSecurityScopedResource()
+        Button { showFileImporter = true } label: { Label("Importar GGUF", systemImage: "folder") }
+            .disabled(llamaState.transfer != nil)
+            .fileImporter(isPresented: $showFileImporter,
+                          allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data]) { result in
+                switch result {
+                case .success(let url):
+                    llamaState.importModel(url)
+                case .failure(let error):
+                    llamaState.report("No se pudo abrir el archivo: \(error.localizedDescription)")
                 }
-            case .failure(let error):
-                print(error)
             }
-        }
     }
 }

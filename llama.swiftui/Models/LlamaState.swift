@@ -1,6 +1,58 @@
 import Foundation
 import UIKit
 
+final class DiagnosticLog: @unchecked Sendable {
+    static let shared = DiagnosticLog()
+    private let lock = NSLock()
+    private let clock = ISO8601DateFormatter()
+    private var lines: [String] = []
+    private var handle: FileHandle?
+    private var bytesWritten = 0
+    let file: URL
+
+    private init() {
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs", isDirectory: true)
+        file = folder.appendingPathComponent("CrucibleLLM-\(UUID().uuidString.prefix(8)).log")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            if FileManager.default.createFile(atPath: file.path, contents: nil) {
+                handle = try FileHandle(forWritingTo: file)
+            } else {
+                lines.append("No se pudo crear el archivo de diagnóstico.")
+            }
+        } catch {
+            lines.append("No se pudo abrir el registro: \(error.localizedDescription)")
+        }
+    }
+
+    func write(_ message: String, source: String = "App") {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        lock.withLock {
+            let line = "\(clock.string(from: Date())) [\(source)] \(text)"
+            lines.append(line)
+            if lines.count > 250 { lines.removeFirst(lines.count - 250) }
+            guard let handle else { return }
+            do {
+                let data = Data((line + "\n").utf8)
+                if bytesWritten + data.count > 2_097_152 {
+                    try handle.seek(toOffset: 0)
+                    try handle.truncate(atOffset: 0)
+                    bytesWritten = 0
+                }
+                try handle.write(contentsOf: data)
+                bytesWritten += data.count
+            } catch {
+                lines.append("No se pudo guardar el registro: \(error.localizedDescription)")
+                self.handle = nil
+            }
+        }
+    }
+
+    func recent() -> [String] { lock.withLock { lines } }
+}
+
 enum CompletionError: Error {
     case busy
     case noModel
@@ -23,9 +75,15 @@ struct Model: Identifiable {
 @MainActor
 class LlamaState: ObservableObject {
     @Published var messageLog = ""
-    @Published var cacheCleared = false
     @Published var downloadedModels: [Model] = []
     @Published var undownloadedModels: [Model] = []
+    @Published private(set) var loadedModel: String?
+    @Published private(set) var loadingModel: String?
+    @Published private(set) var loadStatus = "Selecciona un archivo GGUF para empezar."
+    @Published private(set) var stoppingLoad = false
+    @Published private(set) var busy = false
+    @Published private(set) var transfer: String?
+    @Published var useMetal = true
     let NS_PER_S = 1_000_000_000.0
 
     @Published var serverRunning = false
@@ -33,48 +91,39 @@ class LlamaState: ObservableObject {
     let httpServer = HTTPServer(port: 8080)
 
     private var llamaContext: LlamaContext?
-    private var busy = false
+    private var loadControl: ModelLoadControl?
+    private var transferTask: Task<Void, Never>?
+    private var generationControl: ModelLoadControl?
+    private var waitingRequests = 0
     var hasModel: Bool { llamaContext != nil }
-    private var defaultModelUrl: URL? {
-        Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
-        // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
-    }
+    var loadProgress: Float { loadControl?.progress ?? 0 }
+    var isGenerating: Bool { generationControl != nil }
 
     init() {
-        loadModelsFromDisk()
-        loadDefaultModels()
+        refreshModels()
+        DiagnosticLog.shared.write("CrucibleLLM iniciado.")
     }
 
-    private func loadModelsFromDisk() {
+    private func refreshModels() {
         do {
             let documentsURL = getDocumentsDirectory()
-            let modelURLs = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
-            for modelURL in modelURLs {
-                let modelName = modelURL.deletingPathExtension().lastPathComponent
-                downloadedModels.append(Model(name: modelName, url: "", filename: modelURL.lastPathComponent, status: "downloaded"))
+            let modelURLs = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            downloadedModels = modelURLs.filter { $0.pathExtension.lowercased() == "gguf" }.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }.map { file in
+                defaultModels.first { $0.filename == file.lastPathComponent }
+                    ?? Model(name: file.deletingPathExtension().lastPathComponent, url: "", filename: file.lastPathComponent, status: nil)
             }
+            let local = Set(downloadedModels.map(\.filename))
+            undownloadedModels = defaultModels.filter { !local.contains($0.filename) }
         } catch {
-            print("Error loading models from disk: \(error)")
+            report("No se pudo consultar la biblioteca: \(error.localizedDescription)")
         }
     }
 
-    private func loadDefaultModels() {
-        do {
-            try loadModel(modelUrl: defaultModelUrl)
-        } catch {
-            messageLog += "Error!\n"
-        }
-
-        for model in defaultModels {
-            let fileURL = getDocumentsDirectory().appendingPathComponent(model.filename)
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-
-            } else {
-                var undownloadedModel = model
-                undownloadedModel.status = "download"
-                undownloadedModels.append(undownloadedModel)
-            }
-        }
+    func report(_ message: String) {
+        loadStatus = message
+        DiagnosticLog.shared.write(message)
     }
 
     func getDocumentsDirectory() -> URL {
@@ -133,24 +182,135 @@ class LlamaState: ObservableObject {
             filename: "openhermes-2.5-mistral-7b.Q3_K_M.gguf", status: "download"
         )
     ]
-    func loadModel(modelUrl: URL?) throws {
-        guard !busy else { throw CompletionError.busy }
-        if let modelUrl {
-            messageLog += "Loading model...\n"
-            llamaContext = nil
-            llamaContext = try LlamaContext.create_context(path: modelUrl.path())
-            messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
-
-            // Assuming that the model is successfully loaded, update the downloaded models
-            updateDownloadedModels(modelName: modelUrl.lastPathComponent, status: "downloaded")
-        } else {
-            messageLog += "Load a model from the list below\n"
+    func loadModel(_ model: Model) {
+        guard !busy, loadingModel == nil else { return }
+        stopServer()
+        llamaContext = nil
+        loadedModel = nil
+        let url = getDocumentsDirectory().appendingPathComponent(model.filename)
+        let control = ModelLoadControl()
+        let metal = useMetal
+        loadControl = control
+        loadingModel = model.name
+        report("Cargando \(model.name)…")
+        Task {
+            defer {
+                loadControl = nil
+                loadingModel = nil
+                stoppingLoad = false
+            }
+            do {
+                let context = try await Task.detached(priority: .userInitiated) {
+                    try LlamaContext.create_context(url: url, useMetal: metal, control: control)
+                }.value
+                if control.isCancelled { throw CancellationError() }
+                llamaContext = context
+                loadedModel = model.name
+                report("\(model.name) listo · \(metal ? "Metal" : "CPU")")
+            } catch is CancellationError {
+                report("Carga cancelada.")
+            } catch {
+                report("Falló la carga de \(model.name): \(error.localizedDescription)")
+            }
         }
     }
 
+    func cancelLoad() {
+        guard let loadControl else { return }
+        stoppingLoad = true
+        loadControl.cancel()
+        report("Cancelando la carga…")
+    }
 
-    private func updateDownloadedModels(modelName: String, status: String) {
-        undownloadedModels.removeAll { $0.name == modelName }
+    func stopGeneration() {
+        generationControl?.cancel()
+    }
+
+    func unloadModel() {
+        guard !busy, loadingModel == nil, hasModel else { return }
+        stopServer()
+        llamaContext = nil
+        loadedModel = nil
+        report("Modelo descargado de la memoria.")
+    }
+
+    func removeModel(_ model: Model) {
+        guard loadingModel == nil, loadedModel != model.name else { return }
+        do {
+            try FileManager.default.removeItem(at: getDocumentsDirectory().appendingPathComponent(model.filename))
+            refreshModels()
+            DiagnosticLog.shared.write("Eliminado \(model.filename).")
+        } catch {
+            report("No se pudo eliminar el archivo: \(error.localizedDescription)")
+        }
+    }
+
+    func download(_ url: URL, filename: String) {
+        guard transferTask == nil, url.scheme?.lowercased() == "https", url.host != nil,
+              filename == (filename as NSString).lastPathComponent,
+              (filename as NSString).pathExtension.lowercased() == "gguf" else {
+            report("Usa un enlace HTTPS directo a un archivo .gguf.")
+            return
+        }
+        transfer = filename
+        DiagnosticLog.shared.write("Descargando \(filename).")
+        let destination = getDocumentsDirectory().appendingPathComponent(filename)
+        transferTask = Task {
+            defer {
+                transfer = nil
+                transferTask = nil
+            }
+            do {
+                let (file, response) = try await URLSession.shared.download(from: url)
+                defer { try? FileManager.default.removeItem(at: file) }
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    report("Descarga rechazada por el servidor (HTTP \(code)).")
+                    return
+                }
+                try LlamaContext.verifyGGUF(file)
+                try FileManager.default.moveItem(at: file, to: destination)
+                refreshModels()
+                report("\(filename) guardado.")
+            } catch {
+                let message = Task.isCancelled ? "Descarga cancelada." : "Falló la descarga: \(error.localizedDescription)"
+                report(message)
+            }
+        }
+    }
+
+    func cancelDownload() {
+        transferTask?.cancel()
+    }
+
+    func importModel(_ source: URL) {
+        guard transferTask == nil, source.pathExtension.lowercased() == "gguf" else { return }
+        transfer = source.lastPathComponent
+        let destination = getDocumentsDirectory().appendingPathComponent(source.lastPathComponent)
+        transferTask = Task {
+            defer {
+                transfer = nil
+                transferTask = nil
+            }
+            do {
+                let copy = Task.detached(priority: .utility) {
+                    let scoped = source.startAccessingSecurityScopedResource()
+                    defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+                    try LlamaContext.verifyGGUF(source)
+                    let staging = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString)")
+                    defer { try? FileManager.default.removeItem(at: staging) }
+                    try FileManager.default.copyItem(at: source, to: staging)
+                    try Task.checkCancellation()
+                    try FileManager.default.moveItem(at: staging, to: destination)
+                }
+                try await withTaskCancellationHandler(operation: { try await copy.value }, onCancel: { copy.cancel() })
+                refreshModels()
+                report("\(source.lastPathComponent) importado.")
+            } catch {
+                report(Task.isCancelled ? "Importación cancelada." : "Falló la importación: \(error.localizedDescription)")
+            }
+        }
     }
 
 
@@ -220,40 +380,69 @@ class LlamaState: ObservableObject {
 
     func toggleServer() {
         if serverRunning {
-            httpServer.stop()
-            UIApplication.shared.isIdleTimerDisabled = false
-            serverRunning = false
-            serverAddress = ""
-            messageLog += "Server stopped\n"
-        } else {
-            do {
-                try httpServer.start(llamaState: self)
-                UIApplication.shared.isIdleTimerDisabled = true
-                serverRunning = true
-                let ip = httpServer.getLocalIP()
-                serverAddress = "http://\(ip):8080"
-                messageLog += "Server started at \(serverAddress)\n"
-            } catch {
-                messageLog += "Failed to start server: \(error)\n"
-            }
+            stopServer()
+            return
+        }
+        guard hasModel else { return }
+        do {
+            try httpServer.start(llamaState: self)
+            UIApplication.shared.isIdleTimerDisabled = true
+            serverRunning = true
+            let ip = httpServer.getLocalIP()
+            serverAddress = "http://\(ip):8080/v1"
+            DiagnosticLog.shared.write("Servidor iniciado en \(serverAddress).")
+        } catch {
+            report("No se pudo iniciar el servidor: \(error.localizedDescription)")
         }
     }
 
+    func stopServer() {
+        guard serverRunning else { return }
+        httpServer.stop()
+        stopGeneration()
+        UIApplication.shared.isIdleTimerDisabled = false
+        serverRunning = false
+        serverAddress = ""
+        DiagnosticLog.shared.write("Servidor detenido.")
+    }
+
+    func serverFailed(_ error: Error) {
+        stopServer()
+        report("Error del servidor: \(error.localizedDescription)")
+    }
+
     func generate(text: String, maxTokens: Int, parseSpecial: Bool,
+                  fromServer: Bool = false,
                   onText: (String) async throws -> Void) async throws -> CompletionUsage {
-        guard let llamaContext else { throw CompletionError.noModel }
+        if fromServer, busy {
+            guard waitingRequests < 2 else { throw CompletionError.busy }
+            waitingRequests += 1
+            defer { waitingRequests -= 1 }
+            let deadline = Date().addingTimeInterval(90)
+            while busy && serverRunning {
+                if Date() >= deadline { throw CompletionError.busy }
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+        guard let llamaContext, !fromServer || serverRunning else { throw CompletionError.noModel }
         guard !busy else { throw CompletionError.busy }
+        let control = ModelLoadControl()
+        generationControl = control
         busy = true
-        defer { busy = false }
+        defer {
+            generationControl = nil
+            busy = false
+        }
 
         do {
-            try await llamaContext.completion_init(text: text, parseSpecial: parseSpecial)
+            try await llamaContext.completion_init(text: text, parseSpecial: parseSpecial, control: control)
             let prompt = Int(await llamaContext.n_cur)
             let available = Int(await llamaContext.n_len) - prompt
             let limit = min(maxTokens, available)
             var output = 0
             while output < limit {
                 try Task.checkCancellation()
+                if control.isCancelled { throw CancellationError() }
                 let piece = try await llamaContext.completion_loop()
                 if !piece.isEmpty { try await onText(piece) }
                 let finished = await llamaContext.is_done
@@ -268,9 +457,13 @@ class LlamaState: ObservableObject {
                 if !tail.isEmpty { try await onText(tail) }
             }
             await llamaContext.clear()
+            if fromServer {
+                DiagnosticLog.shared.write("Chat completado. Entrada: \(prompt) tokens. Salida: \(output) tokens.", source: "API")
+            }
             return CompletionUsage(prompt: prompt, output: output, finishReason: stopped ? "stop" : "length")
         } catch {
             await llamaContext.clear()
+            DiagnosticLog.shared.write("Generación interrumpida: \(error.localizedDescription)", source: fromServer ? "API" : "App")
             throw error
         }
     }

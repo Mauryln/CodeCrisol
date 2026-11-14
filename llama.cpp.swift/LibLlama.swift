@@ -1,11 +1,42 @@
 import Foundation
 import llama
+import os
 
-enum LlamaError: Error {
+enum LlamaError: LocalizedError {
+    case invalidModel
+    case couldNotLoadWeights
     case couldNotInitializeContext
     case invalidPrompt
     case contextExceeded
     case decodeFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidModel: return "El archivo no tiene una cabecera GGUF válida."
+        case .couldNotLoadWeights: return "llama.cpp no pudo cargar los pesos. Revisa el registro."
+        case .couldNotInitializeContext: return "llama.cpp no pudo inicializar el contexto. Revisa el registro."
+        case .invalidPrompt: return "El prompt está vacío."
+        case .contextExceeded: return "El prompt excede el contexto."
+        case .decodeFailed: return "llama.cpp no pudo generar la respuesta."
+        }
+    }
+}
+
+final class ModelLoadControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var fraction: Float = 0
+
+    func cancel() { lock.withLock { cancelled = true } }
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    var progress: Float { lock.withLock { fraction } }
+
+    func update(_ progress: Float) -> Bool {
+        lock.withLock {
+            fraction = progress
+            return !cancelled
+        }
+    }
 }
 
 func llama_batch_clear(_ batch: inout llama_batch) {
@@ -62,35 +93,69 @@ actor LlamaContext {
         llama_backend_free()
     }
 
-    static func create_context(path: String) throws -> LlamaContext {
+    static func verifyGGUF(_ url: URL) throws {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        let header = try file.read(upToCount: 24) ?? Data()
+        guard header.count == 24, header.prefix(4) == Data("GGUF".utf8) else {
+            throw LlamaError.invalidModel
+        }
+    }
+
+    static func create_context(url: URL, useMetal: Bool, control: ModelLoadControl) throws -> LlamaContext {
+        try verifyGGUF(url)
+        if control.isCancelled { throw CancellationError() }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        DiagnosticLog.shared.write("GGUF \(url.lastPathComponent), \(size) bytes. Memoria disponible para la app: \(os_proc_available_memory()) bytes. Motor: \(useMetal ? "Metal" : "CPU").")
+        llama_log_set({ level, message, _ in
+            guard level != GGML_LOG_LEVEL_DEBUG, let message else { return }
+            DiagnosticLog.shared.write(String(cString: message), source: "llama.cpp")
+        }, nil)
         llama_backend_init()
         var model_params = llama_model_default_params()
+        model_params.progress_callback_user_data = Unmanaged.passUnretained(control).toOpaque()
+        model_params.progress_callback = { progress, data in
+            guard let data else { return false }
+            return Unmanaged<ModelLoadControl>.fromOpaque(data).takeUnretainedValue().update(progress)
+        }
 
 #if targetEnvironment(simulator)
-        model_params.n_gpu_layers = 0
-        print("Running on simulator, force use n_gpu_layers = 0")
+        let enableGPU = false
+#else
+        let enableGPU = useMetal
 #endif
-        let model = llama_model_load_from_file(path, model_params)
+        if !enableGPU {
+            model_params.n_gpu_layers = 0
+            model_params.split_mode = LLAMA_SPLIT_MODE_NONE
+            model_params.main_gpu = -1
+        }
+        let model = llama_model_load_from_file(url.path(percentEncoded: false), model_params)
         guard let model else {
             llama_backend_free()
-            print("Could not load model at \(path)")
-            throw LlamaError.couldNotInitializeContext
+            if control.isCancelled { throw CancellationError() }
+            throw LlamaError.couldNotLoadWeights
+        }
+        if control.isCancelled {
+            llama_model_free(model)
+            llama_backend_free()
+            throw CancellationError()
         }
 
         let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
-        print("Using \(n_threads) threads")
+        DiagnosticLog.shared.write("Inicializando contexto de 4096 tokens con \(n_threads) hilos.")
 
         var ctx_params = llama_context_default_params()
         ctx_params.n_ctx = 4096
         ctx_params.n_batch = 512
         ctx_params.n_threads       = Int32(n_threads)
         ctx_params.n_threads_batch = Int32(n_threads)
+        ctx_params.offload_kqv = enableGPU
+        ctx_params.op_offload = enableGPU
 
         let context = llama_init_from_model(model, ctx_params)
         guard let context else {
             llama_model_free(model)
             llama_backend_free()
-            print("Could not load context!")
             throw LlamaError.couldNotInitializeContext
         }
 
@@ -121,7 +186,7 @@ actor LlamaContext {
         return batch.n_tokens;
     }
 
-    func completion_init(text: String, parseSpecial: Bool = false) throws {
+    func completion_init(text: String, parseSpecial: Bool, control: ModelLoadControl) throws {
         clear()
         llama_sampler_reset(sampling)
         is_done = false
@@ -131,6 +196,7 @@ actor LlamaContext {
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
         for start in stride(from: 0, to: tokens_list.count, by: 512) {
             try Task.checkCancellation()
+            if control.isCancelled { throw CancellationError() }
             llama_batch_clear(&batch)
             let end = min(start + 512, tokens_list.count)
             for index in start..<end {
