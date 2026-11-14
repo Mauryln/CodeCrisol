@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Local build snapshots. Kept on disk, never committed or released.
+# ---------------------------------------------------------------------------
+backups/
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Run output, captures, shader dumps, credentials
+# ---------------------------------------------------------------------------
+*.log
+*.err
+run.log
+run.err
+build.log
+screenshot*.png
+cap*/
+rsxcap/
+pad.txt
+dbg.txt*
+*.hlsl
+keys/
+*.token
+.env
+.env.*
+# Local agent installation and workstation checkpoints
+.agents/
+skills-lock.json
+docs/changes/

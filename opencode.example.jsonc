@@ -1,0 +1,38 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ipad/local",
+  "agents": {
+    "ipad-chat": {
+      "description": "Conversación de texto con el modelo del iPad",
+      "mode": "primary",
+      "system": "Responde a las preguntas del usuario. Puedes explicar código y proponer cambios en texto.",
+      "steps": 1,
+      "permissions": [
+        { "action": "*", "resource": "*", "effect": "deny" }
+      ]
+    }
+  },
+  "providers": {
+    "ipad": {
+      "name": "CrucibleLLM (iPad)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://192.168.1.50:8080/v1"
+      },
+      "models": {
+        "local": {
+          "name": "Modelo cargado en el iPad",
+          "capabilities": {
+            "tools": false,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 4096,
+            "output": 500
+          }
+        }
+      }
+    }
+  }
+}

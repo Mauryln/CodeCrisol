@@ -1,4 +1,16 @@
 import Foundation
+import UIKit
+
+enum CompletionError: Error {
+    case busy
+    case noModel
+}
+
+struct CompletionUsage {
+    let prompt: Int
+    let output: Int
+    let finishReason: String
+}
 
 struct Model: Identifiable {
     var id = UUID()
@@ -21,6 +33,8 @@ class LlamaState: ObservableObject {
     let httpServer = HTTPServer(port: 8080)
 
     private var llamaContext: LlamaContext?
+    private var busy = false
+    var hasModel: Bool { llamaContext != nil }
     private var defaultModelUrl: URL? {
         Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
         // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
@@ -69,6 +83,11 @@ class LlamaState: ObservableObject {
     }
     private let defaultModels: [Model] = [
         Model(
+            name: "Qwen3-8B (Q4_K_M, 5.03 GB)",
+            url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true",
+            filename: "Qwen3-8B-Q4_K_M.gguf", status: "download"
+        ),
+        Model(
             name: "Gemma-3-4B-IT (Q4_K_M, 2.9 GiB)",
             url: "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf?download=true",
             filename: "gemma-3-4b-it-Q4_K_M.gguf", status: "download"
@@ -115,8 +134,10 @@ class LlamaState: ObservableObject {
         )
     ]
     func loadModel(modelUrl: URL?) throws {
+        guard !busy else { throw CompletionError.busy }
         if let modelUrl {
             messageLog += "Loading model...\n"
+            llamaContext = nil
             llamaContext = try LlamaContext.create_context(path: modelUrl.path())
             messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
 
@@ -134,46 +155,33 @@ class LlamaState: ObservableObject {
 
 
     func complete(text: String) async {
-        guard let llamaContext else {
-            return
-        }
-
-        let t_start = DispatchTime.now().uptimeNanoseconds
-        await llamaContext.completion_init(text: text)
-        let t_heat_end = DispatchTime.now().uptimeNanoseconds
-        let t_heat = Double(t_heat_end - t_start) / NS_PER_S
-
-        messageLog += "\(text)"
-
-        Task.detached {
-            while await !llamaContext.is_done {
-                let result = await llamaContext.completion_loop()
-                await MainActor.run {
-                    self.messageLog += "\(result)"
+        guard hasModel else { return }
+        messageLog += text
+        let start = DispatchTime.now().uptimeNanoseconds
+        var firstOutput: UInt64?
+        do {
+            let usage = try await generate(text: text, maxTokens: Int.max, parseSpecial: false) { piece in
+                if firstOutput == nil { firstOutput = DispatchTime.now().uptimeNanoseconds }
+                self.messageLog += piece
+            }
+            messageLog += "\nDone\n"
+            if let firstOutput {
+                let latency = Double(firstOutput - start) / NS_PER_S
+                let duration = Double(DispatchTime.now().uptimeNanoseconds - firstOutput) / NS_PER_S
+                messageLog += "Time to first text: \(latency)s\n"
+                if duration > 0, usage.output > 1 {
+                    messageLog += "Generated \(Double(usage.output - 1) / duration) t/s\n"
                 }
             }
-
-            let t_end = DispatchTime.now().uptimeNanoseconds
-            let t_generation = Double(t_end - t_heat_end) / self.NS_PER_S
-            let tokens_per_second = Double(await llamaContext.n_len) / t_generation
-
-            await llamaContext.clear()
-
-            await MainActor.run {
-                self.messageLog += """
-                    \n
-                    Done
-                    Heat up took \(t_heat)s
-                    Generated \(tokens_per_second) t/s\n
-                    """
-            }
+        } catch {
+            messageLog += "\nGeneration failed: \(error)\n"
         }
     }
 
     func bench() async {
-        guard let llamaContext else {
-            return
-        }
+        guard !busy, let llamaContext else { return }
+        busy = true
+        defer { busy = false }
 
         messageLog += "\n"
         messageLog += "Running benchmark...\n"
@@ -200,9 +208,9 @@ class LlamaState: ObservableObject {
     }
 
     func clear() async {
-        guard let llamaContext else {
-            return
-        }
+        guard !busy, let llamaContext else { return }
+        busy = true
+        defer { busy = false }
 
         await llamaContext.clear()
         messageLog = ""
@@ -213,12 +221,14 @@ class LlamaState: ObservableObject {
     func toggleServer() {
         if serverRunning {
             httpServer.stop()
+            UIApplication.shared.isIdleTimerDisabled = false
             serverRunning = false
             serverAddress = ""
             messageLog += "Server stopped\n"
         } else {
             do {
                 try httpServer.start(llamaState: self)
+                UIApplication.shared.isIdleTimerDisabled = true
                 serverRunning = true
                 let ip = httpServer.getLocalIP()
                 serverAddress = "http://\(ip):8080"
@@ -229,41 +239,39 @@ class LlamaState: ObservableObject {
         }
     }
 
-    // Non-streaming completion for API use
-    func completeForAPI(text: String, maxTokens: Int = 500) async -> String {
-        guard let llamaContext else {
-            return "Error: No model loaded"
-        }
+    func generate(text: String, maxTokens: Int, parseSpecial: Bool,
+                  onText: (String) async throws -> Void) async throws -> CompletionUsage {
+        guard let llamaContext else { throw CompletionError.noModel }
+        guard !busy else { throw CompletionError.busy }
+        busy = true
+        defer { busy = false }
 
-        await llamaContext.completion_init(text: text)
-        var result = ""
-        var tokenCount = 0
-
-        while await !llamaContext.is_done && tokenCount < maxTokens {
-            let piece = await llamaContext.completion_loop()
-            result += piece
-            tokenCount += 1
-        }
-
-        await llamaContext.clear()
-
-        // Strip <think>...</think> blocks from Qwen-style reasoning models
-        var cleaned = result
-        if let thinkStart = cleaned.range(of: "<think>") {
-            if let thinkEnd = cleaned.range(of: "</think>") {
-                // Full think block — take everything after it
-                cleaned = String(cleaned[thinkEnd.upperBound...])
-            } else {
-                // Think block consumed all tokens — take everything before it
-                cleaned = String(cleaned[..<thinkStart.lowerBound])
+        do {
+            try await llamaContext.completion_init(text: text, parseSpecial: parseSpecial)
+            let prompt = Int(await llamaContext.n_cur)
+            let available = Int(await llamaContext.n_len) - prompt
+            let limit = min(maxTokens, available)
+            var output = 0
+            while output < limit {
+                try Task.checkCancellation()
+                let piece = try await llamaContext.completion_loop()
+                if !piece.isEmpty { try await onText(piece) }
+                let finished = await llamaContext.is_done
+                if finished {
+                    break
+                }
+                output += 1
             }
+            let stopped = await llamaContext.is_done
+            if !stopped {
+                let tail = await llamaContext.flushText()
+                if !tail.isEmpty { try await onText(tail) }
+            }
+            await llamaContext.clear()
+            return CompletionUsage(prompt: prompt, output: output, finishReason: stopped ? "stop" : "length")
+        } catch {
+            await llamaContext.clear()
+            throw error
         }
-
-        // Stop at first <|im_end|> — model may echo the prompt in a loop
-        if let endTag = cleaned.range(of: "<|im_end|>") {
-            cleaned = String(cleaned[..<endTag.lowerBound])
-        }
-
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

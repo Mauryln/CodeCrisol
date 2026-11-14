@@ -34,7 +34,19 @@ curl http://YOUR_IPAD_IP:8080/v1/chat/completions \
   }'
 ```
 
-Works with any OpenAI-compatible client — point it at `http://YOUR_IPAD_IP:8080` as the base URL.
+Use `http://YOUR_IPAD_IP:8080/v1` as the base URL. The API supports text chat, `GET /v1/models`, and SSE when the request sets `"stream": true`.
+
+## OpenCode en Windows
+
+1. Instala el IPA compilado y firmado en tu iPad. Conecta el PC y el iPad a la misma red de confianza. El servidor usa HTTP en la LAN.
+2. En **View Models**, descarga y carga **Qwen3-8B Q4_K_M**. Puedes empezar con el Qwen de 4B para probar antes la conexión.
+3. Pulsa **Start Server** y deja la app visible. Copia la dirección que aparece y añade `/v1`.
+4. En el proyecto que abrirás con OpenCode 2.x, copia [opencode.example.jsonc](opencode.example.jsonc) a `opencode.jsonc` o integra el proveedor `ipad` y el agente `ipad-chat` en tu configuración existente. Sustituye la IP de ejemplo por la del iPad.
+5. Prueba con `opencode run --agent ipad-chat --model ipad/local "Responde solo con OK."`
+
+El modelo se publica como `local` y corresponde al GGUF cargado en el iPad. OpenCode puede usarlo para conversación de texto. Las acciones que requieren llamadas a herramientas, como editar archivos o ejecutar comandos, requieren soporte adicional del servidor.
+
+El contexto de 4.096 tokens incluye instrucciones de OpenCode, historial y respuesta. Si pruebas con un prompt largo, empieza una sesión nueva para liberar contexto. El servidor acepta una generación a la vez y devuelve HTTP 429 si está ocupado.
 
 ## Building from Source
 
@@ -51,7 +63,7 @@ The workflow builds the llama.cpp xcframework from source, then compiles the iOS
 
 - **Memory pressure** — iPads with 8GB RAM can crash on long prompts with large models. Use Q4_K_M quantization and keep context sizes reasonable.
 - **Foreground only** — iOS suspends background apps. The server only works while the app is in the foreground with the screen on.
-- **Single request** — inference is single-threaded. Concurrent API requests queue behind the active one.
+- **Single request** — the server allows one generation at a time.
 
 ## Architecture
 
