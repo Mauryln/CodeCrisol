@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var state = LlamaState()
+    @ObservedObject var state: LlamaState
     @State private var showLogs = false
     @State private var showChat = false
     @State private var prompt = ""
@@ -97,7 +97,7 @@ struct ContentView: View {
             Label("API de red", systemImage: "network")
                 .font(.headline)
                 .foregroundStyle(accent)
-            Label(state.serverRunning ? "Activo" : "Detenido",
+            Label(state.serverRunning ? "Activo" : state.serverStarting ? "Iniciando…" : "Detenido",
                   systemImage: state.serverRunning ? "circle.fill" : "circle")
                 .font(.title3.weight(.semibold))
             if state.serverRunning {
@@ -112,16 +112,25 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
             } else {
-                Text(state.hasModel ? "Comparte este modelo con clientes de tu red local." : "Carga un modelo para habilitar la API.")
+                Text(state.serverError ?? (state.hasModel ? "Comparte este modelo con clientes de tu red local." : "Carga un modelo para habilitar la API."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            Button(state.serverRunning ? "Detener servidor" : "Iniciar servidor") {
-                copied = false
-                state.toggleServer()
+            HStack {
+                Button(state.serverRunning ? "Detener servidor" : state.serverStarting ? "Cancelar inicio" : "Iniciar servidor") {
+                    copied = false
+                    state.toggleServer()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!state.hasModel)
+                if state.serverRunning || state.serverError != nil {
+                    Button("Reiniciar servidor") {
+                        copied = false
+                        state.restartServer()
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!state.hasModel)
             if state.isGenerating {
                 Button("Detener generación", role: .destructive) { state.stopGeneration() }
                     .buttonStyle(.bordered)
@@ -133,15 +142,9 @@ struct ContentView: View {
     private var library: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Biblioteca GGUF").font(.title2.bold())
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    LoadCustomButton(llamaState: state)
-                    InputButton(llamaState: state)
-                }
-                VStack(alignment: .leading) {
-                    LoadCustomButton(llamaState: state)
-                    InputButton(llamaState: state)
-                }
+            HStack {
+                LoadCustomButton(llamaState: state)
+                InputButton(llamaState: state)
             }
             .buttonStyle(.bordered)
             if let transfer = state.transfer {

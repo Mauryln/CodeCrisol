@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import UIKit
 
 final class DiagnosticLog: @unchecked Sendable {
@@ -171,9 +172,13 @@ class LlamaState: ObservableObject {
     @Published var useMetal = true
     let NS_PER_S = 1_000_000_000.0
 
-    @Published var serverRunning = false
-    @Published var serverAddress = ""
-    let httpServer = HTTPServer(port: 8080)
+    @Published private(set) var serverRunning = false
+    @Published private(set) var serverStarting = false
+    @Published private(set) var serverAddress = ""
+    @Published private(set) var serverError: String?
+    private let httpServer = HTTPServer()
+    private var serverRetry: Task<Void, Never>?
+    private var serverAttempt = 0
 
     private var llamaContext: LlamaContext?
     private var loadControl: ModelLoadControl?
@@ -382,9 +387,14 @@ class LlamaState: ObservableObject {
     }
 
     func importModel(_ source: URL) {
-        guard transfer == nil, source.pathExtension.lowercased() == "gguf" else { return }
+        guard transfer == nil else { return }
+        guard source.pathExtension.lowercased() == "gguf" else {
+            report("Selecciona un archivo con extensión .gguf.")
+            return
+        }
         transfer = source.lastPathComponent
         let destination = getDocumentsDirectory().appendingPathComponent(source.lastPathComponent)
+        DiagnosticLog.shared.write("Importando \(source.lastPathComponent) desde Archivos.", source: "Importación")
         transferTask = Task {
             defer {
                 transfer = nil
@@ -394,16 +404,37 @@ class LlamaState: ObservableObject {
                 let copy = Task.detached(priority: .utility) {
                     let scoped = source.startAccessingSecurityScopedResource()
                     defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-                    try LlamaContext.verifyGGUF(source)
-                    let staging = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString)")
-                    defer { try? FileManager.default.removeItem(at: staging) }
-                    try FileManager.default.copyItem(at: source, to: staging)
-                    try Task.checkCancellation()
-                    try FileManager.default.moveItem(at: staging, to: destination)
+                    var coordinationError: NSError?
+                    var outcome: Result<Bool, Error>?
+                    NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinationError) { readableURL in
+                        outcome = Result {
+                            try Task.checkCancellation()
+                            try LlamaContext.verifyGGUF(readableURL)
+                            if readableURL.standardizedFileURL == destination.standardizedFileURL { return false }
+
+                            let folder = destination.deletingLastPathComponent()
+                            var target = destination
+                            var suffix = 2
+                            while FileManager.default.fileExists(atPath: target.path) {
+                                let name = destination.deletingPathExtension().lastPathComponent
+                                target = folder.appendingPathComponent("\(name) (\(suffix)).gguf")
+                                suffix += 1
+                            }
+                            let staging = folder.appendingPathComponent(".\(UUID().uuidString)")
+                            defer { try? FileManager.default.removeItem(at: staging) }
+                            try FileManager.default.copyItem(at: readableURL, to: staging)
+                            try Task.checkCancellation()
+                            try FileManager.default.moveItem(at: staging, to: target)
+                            return true
+                        }
+                    }
+                    if let coordinationError { throw coordinationError }
+                    guard let outcome else { throw CocoaError(.fileReadUnknown) }
+                    return try outcome.get()
                 }
-                try await withTaskCancellationHandler(operation: { try await copy.value }, onCancel: { copy.cancel() })
+                let imported = try await withTaskCancellationHandler(operation: { try await copy.value }, onCancel: { copy.cancel() })
                 refreshModels()
-                report("\(source.lastPathComponent) importado.")
+                report(imported ? "Modelo importado: \(source.lastPathComponent)." : "El modelo ya está en la biblioteca.")
             } catch {
                 report(Task.isCancelled ? "Importación cancelada." : "Falló la importación: \(error.localizedDescription)")
             }
@@ -476,36 +507,72 @@ class LlamaState: ObservableObject {
     // MARK: - HTTP Server
 
     func toggleServer() {
-        if serverRunning {
+        if serverRunning || serverStarting {
             stopServer()
             return
         }
+        restartServer()
+    }
+
+    func restartServer() {
         guard hasModel else { return }
+        stopServer()
+        serverError = nil
+        serverStarting = true
+        serverAttempt = 0
+        startListener()
+    }
+
+    private func startListener() {
+        let preferred = NWEndpoint.Port(rawValue: 8080)!
         do {
-            try httpServer.start(llamaState: self)
-            UIApplication.shared.isIdleTimerDisabled = true
-            serverRunning = true
-            let ip = httpServer.getLocalIP()
-            serverAddress = "http://\(ip):8080/v1"
-            DiagnosticLog.shared.write("Servidor iniciado en \(serverAddress).")
+            try httpServer.start(llamaState: self, port: serverAttempt < 2 ? preferred : .any)
         } catch {
-            report("No se pudo iniciar el servidor: \(error.localizedDescription)")
+            serverFailed(error)
         }
     }
 
+    func serverReady(port: UInt16) {
+        guard serverStarting else { return }
+        serverStarting = false
+        serverRunning = true
+        UIApplication.shared.isIdleTimerDisabled = true
+        serverAddress = "http://\(httpServer.getLocalIP()):\(port)/v1"
+        DiagnosticLog.shared.write("Servidor escuchando en \(serverAddress).")
+    }
+
     func stopServer() {
-        guard serverRunning else { return }
+        let wasActive = serverRunning || serverStarting
+        serverRetry?.cancel()
+        serverRetry = nil
         httpServer.stop()
-        stopGeneration()
-        UIApplication.shared.isIdleTimerDisabled = false
+        if wasActive {
+            stopGeneration()
+            UIApplication.shared.isIdleTimerDisabled = false
+            DiagnosticLog.shared.write("Servidor detenido.")
+        }
         serverRunning = false
+        serverStarting = false
         serverAddress = ""
-        DiagnosticLog.shared.write("Servidor detenido.")
     }
 
     func serverFailed(_ error: Error) {
+        DiagnosticLog.shared.write("Error del servidor: \(error.localizedDescription)")
+        if serverStarting, let networkError = error as? NWError,
+           case .posix(.EADDRINUSE) = networkError, serverAttempt < 2 {
+            httpServer.stop()
+            serverAttempt += 1
+            DiagnosticLog.shared.write(serverAttempt == 1 ? "Puerto 8080 ocupado. Reintentando." : "Puerto 8080 ocupado. Buscando un puerto libre.")
+            serverRetry = Task {
+                do { try await Task.sleep(nanoseconds: 400_000_000) }
+                catch { return }
+                serverRetry = nil
+                if serverStarting { startListener() }
+            }
+            return
+        }
         stopServer()
-        report("Error del servidor: \(error.localizedDescription)")
+        serverError = error.localizedDescription
     }
 
     func generate(_ messages: [ChatMessage], maxTokens: Int,
@@ -532,7 +599,9 @@ class LlamaState: ObservableObject {
         }
 
         do {
+            let started = DispatchTime.now().uptimeNanoseconds
             try await llamaContext.completion_init(messages, control: control)
+            let prefillEnd = DispatchTime.now().uptimeNanoseconds
             let prompt = Int(await llamaContext.n_cur)
             let available = Int(await llamaContext.n_len) - prompt
             let limit = min(maxTokens, available)
@@ -555,7 +624,10 @@ class LlamaState: ObservableObject {
             }
             await llamaContext.clear()
             if fromServer {
-                DiagnosticLog.shared.write("Chat completado. Entrada: \(prompt) tokens. Salida: \(output) tokens.", source: "API")
+                let prefillMs = Double(prefillEnd - started) / 1_000_000
+                let decodeSeconds = Double(DispatchTime.now().uptimeNanoseconds - prefillEnd) / NS_PER_S
+                let throughput = decodeSeconds > 0 ? Double(output) / decodeSeconds : 0
+                DiagnosticLog.shared.write(String(format: "Chat completado · entrada %d tokens · prefill %.1f ms · salida %d tokens · %.1f tok/s", prompt, prefillMs, output, throughput), source: "API")
             }
             return CompletionUsage(prompt: prompt, output: output, finishReason: stopped ? "stop" : "length")
         } catch {

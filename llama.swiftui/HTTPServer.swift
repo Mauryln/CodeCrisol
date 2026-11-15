@@ -2,38 +2,47 @@ import Foundation
 import Network
 
 /// Minimal HTTP server that serves an OpenAI-compatible chat completions API
-class HTTPServer {
+@MainActor
+final class HTTPServer {
     private var listener: NWListener?
-    private let port: UInt16
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var requests: [ObjectIdentifier: Task<Void, Never>] = [:]
     private weak var llamaState: LlamaState?
 
-    var isRunning: Bool { listener != nil }
-
-    init(port: UInt16 = 8080) {
-        self.port = port
-    }
-
-    func start(llamaState: LlamaState) throws {
+    func start(llamaState: LlamaState, port: NWEndpoint.Port) throws {
+        stop()
         self.llamaState = llamaState
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
-        listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-        listener?.newConnectionHandler = { [weak self] conn in
-            self?.handleConnection(conn)
+        let current = try NWListener(using: .tcp, on: port)
+        listener = current
+        current.newConnectionHandler = { [weak self, weak current] connection in
+            guard let self, let current, self.listener === current else {
+                connection.cancel()
+                return
+            }
+            self.handleConnection(connection)
         }
-        listener?.stateUpdateHandler = { [weak llamaState] state in
-            if case .failed(let error) = state {
-                Task { @MainActor in llamaState?.serverFailed(error) }
+        current.stateUpdateHandler = { [weak self, weak current, weak llamaState] state in
+            guard let current, self?.listener === current else { return }
+            switch state {
+            case .ready:
+                if let port = current.port { llamaState?.serverReady(port: port.rawValue) }
+            case .failed(let error), .waiting(let error):
+                llamaState?.serverFailed(error)
+            default:
+                break
             }
         }
-        listener?.start(queue: .global(qos: .userInitiated))
-        print("HTTP Server started on port \(port)")
+        current.start(queue: .main)
     }
 
     func stop() {
-        listener?.cancel()
+        let current = listener
         listener = nil
-        print("HTTP Server stopped")
+        current?.cancel()
+        requests.values.forEach { $0.cancel() }
+        requests.removeAll()
+        connections.values.forEach { $0.cancel() }
+        connections.removeAll()
     }
 
     func getLocalIP() -> String {
@@ -61,13 +70,24 @@ class HTTPServer {
     }
 
     private func handleConnection(_ connection: NWConnection) {
-        connection.start(queue: .global(qos: .userInitiated))
+        let id = ObjectIdentifier(connection)
+        connections[id] = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                self?.requests.removeValue(forKey: id)?.cancel()
+                self?.connections.removeValue(forKey: id)?.cancel()
+            default:
+                break
+            }
+        }
+        connection.start(queue: .main)
         receiveRequest(connection, buffer: Data())
     }
 
     private func receiveRequest(_ connection: NWConnection, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, finished, error in
-            guard let self, error == nil else {
+            guard let self, self.connections[ObjectIdentifier(connection)] != nil, error == nil else {
                 connection.cancel()
                 return
             }
@@ -200,7 +220,9 @@ class HTTPServer {
         }
         let stream = json["stream"] as? Bool == true
         let includeUsage = (json["stream_options"] as? [String: Any])?["include_usage"] as? Bool == true
-        Task { @MainActor in
+        let connectionID = ObjectIdentifier(connection)
+        requests[connectionID] = Task { @MainActor in
+            defer { self.requests.removeValue(forKey: connectionID) }
             guard let llamaState = self.llamaState else {
                 connection.cancel()
                 return

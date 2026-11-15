@@ -9,7 +9,7 @@ struct LoadCustomButton: View {
         Button { showFileImporter = true } label: { Label("Importar GGUF", systemImage: "folder") }
             .disabled(llamaState.transfer != nil)
             .fileImporter(isPresented: $showFileImporter,
-                          allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data]) { result in
+                          allowedContentTypes: [.item]) { result in
                 switch result {
                 case .success(let url):
                     llamaState.importModel(url)
