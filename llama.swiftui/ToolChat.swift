@@ -1,5 +1,30 @@
 import Foundation
 
+enum ReasoningLevel: Int, CaseIterable {
+    case low, medium, high
+
+    var title: String {
+        switch self {
+        case .low: return "Bajo"
+        case .medium: return "Medio"
+        case .high: return "Alto"
+        }
+    }
+
+    var maximumTokens: Int {
+        switch self {
+        case .low: return 0
+        case .medium: return 128
+        case .high: return 512
+        }
+    }
+
+    func budget(forOutputLimit limit: Int) -> Int {
+        // Keep room for an answer or a tool call, even in a short response.
+        min(maximumTokens, max(0, limit - max(64, limit / 2) - 1))
+    }
+}
+
 enum ToolChatError: LocalizedError {
     case request(String)
     case output(String)
@@ -159,7 +184,7 @@ struct ToolChat {
         guard pendingIDs.isEmpty else { throw ToolChatError.request("Tool results are missing.") }
         if toolResponses { turns += "<|im_end|>\n" }
         return "<|im_start|>system\n\(systems.joined(separator: "\n\n"))<|im_end|>\n"
-            + turns + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            + turns + "<|im_start|>assistant\n"
     }
 
     func calls(_ blocks: [String]) throws -> [ToolCall] {

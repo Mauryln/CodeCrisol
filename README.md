@@ -74,6 +74,10 @@ La tarjeta **Memoria** muestra si el permiso aparece en la firma instalada y cu�
 
 El catálogo incluye Qwen 3.5 4B y 9B de Bartowski, Unsloth y LM Studio Community para `ipad-code`. Qwen2.5-Coder 7B, DeepSeek R1 Distill 7B, DeepSeek Coder V2 Lite e IBM Granite 4.0 Micro se ofrecen para `ipad-chat` en esta build. La tarjeta del modelo cargado indica si tiene herramientas disponibles. El script de sincronización muestra en OpenCode el nombre del GGUF cargado y su contexto efectivo.
 
+En **Modelo**, el control **Pensamiento** se aplica a la siguiente petición de Qwen 3.5. **Bajo** cierra el bloque de razonamiento desde el prompt. **Medio**, el valor inicial, reserva hasta 128 tokens y **Alto** hasta 512. El motor reduce el presupuesto en salidas cortas para dejar espacio a la respuesta o a la llamada de herramienta.
+
+**Caché KV compacta (Q8_0)** reduce la memoria de las claves y valores de atención con Flash Attention. Actívala y usa **Aplicar y recargar**. El diagnóstico muestra la memoria KV reservada. Si un GGUF falla al iniciar con ese ajuste, vuelve a FP16 y recarga.
+
 Para actualizar desde CrucibleLLM, instala CodeCrisol con el mismo identificador y equipo de firma usados en la instalación anterior. Conserva una copia de tus GGUF si tu instalador requiere desinstalar la app.
 
 ## Building from Source

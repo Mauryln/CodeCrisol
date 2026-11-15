@@ -75,6 +75,7 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            reasoningControl
             if state.loadingModel != nil {
                 TimelineView(.periodic(from: .now, by: 0.2)) { _ in
                     if state.loadProgress > 0 && state.loadProgress < 1 {
@@ -102,10 +103,13 @@ struct ContentView: View {
                 .pickerStyle(.menu)
                 .disabled(state.busy)
                 if let context = state.activeContextTokens {
-                    Text("Contexto activo · \(context.formatted()) tokens")
+                    Text("Contexto activo · \(context.formatted()) tokens · KV \(state.activeCacheLabel)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Caché KV compacta (Q8_0)", isOn: $state.compactKV)
+                    .font(.subheadline)
+                    .disabled(state.busy)
                 if state.requestedContextTokens >= 65536 {
                     Text("Los contextos grandes consumen más memoria. Sube por etapas en este iPad.")
                         .font(.footnote)
@@ -127,6 +131,22 @@ struct ContentView: View {
             }
         }
         .panel()
+    }
+
+    private var reasoningControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Pensamiento · \(state.reasoning.title)").font(.subheadline.weight(.medium))
+            Slider(value: Binding(get: { Double(state.reasoning.rawValue) }, set: { value in
+                if let level = ReasoningLevel(rawValue: Int(value)) { state.reasoning = level }
+            }), in: 0...2, step: 1)
+            .accessibilityLabel("Nivel de pensamiento")
+            .accessibilityValue(state.reasoning.title)
+            .disabled(state.hasModel && !state.supportsTools)
+            Text(state.hasModel && !state.supportsTools ? "Disponible con Qwen 3.5." :
+                    "Bajo: directo · Medio: hasta 128 tokens · Alto: hasta 512 tokens")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var memoryCard: some View {

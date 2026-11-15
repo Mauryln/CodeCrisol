@@ -12,6 +12,12 @@ let request: [String: Any] = ["tools": [["type": "function", "function": functio
 let chat = try ToolChat(request)!
 let firstPrompt = try chat.prompt([["role": "user", "content": "Create a file"]])
 precondition(firstPrompt.contains("<tools>") && firstPrompt.contains("must call a tool"))
+precondition(firstPrompt.hasSuffix("<|im_start|>assistant\n"))
+precondition(ReasoningLevel.low.budget(forOutputLimit: 500) == 0)
+precondition(ReasoningLevel.medium.budget(forOutputLimit: 500) == 128)
+precondition(ReasoningLevel.high.budget(forOutputLimit: 4096) == 512)
+precondition(ReasoningLevel.high.budget(forOutputLimit: 128) == 63)
+precondition(ReasoningLevel.medium.budget(forOutputLimit: 32) == 0)
 
 let sample = "<think>hidden</think>Done.\n<tool_call>\n<function=write>\n<parameter=path>\n001.html\n</parameter>\n<parameter=content>\n<h1>Hola</h1>\n\n</parameter>\n<parameter=overwrite>\nfalse\n</parameter>\n</function>\n</tool_call>"
 var output = ToolOutput(parseTools: true)
@@ -19,6 +25,10 @@ var text = ""
 for char in sample { text += try output.append(String(char)) }
 text += try output.append("", final: true)
 precondition(text == "Done.\n")
+var splitReasoning = ToolOutput(parseTools: false)
+let hidden = try splitReasoning.append("<think>interno</thi")
+let answer = try splitReasoning.append("nk>respuesta")
+precondition(hidden.isEmpty && answer == "respuesta")
 let calls = try chat.calls(output.blocks)
 precondition(calls.count == 1 && calls[0].name == "write")
 let arguments = try JSONSerialization.jsonObject(with: Data(calls[0].arguments.utf8)) as! [String: Any]

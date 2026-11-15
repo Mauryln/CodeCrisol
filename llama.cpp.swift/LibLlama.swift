@@ -71,6 +71,8 @@ actor LlamaContext {
 
     /// This variable is used to store temporarily invalid cchars
     private var temporary_invalid_cchars: [CChar]
+    private var remainingThought: Int?
+    private var thoughtEndToken: llama_token?
 
     nonisolated let contextTokens: Int
     nonisolated let supportsTools: Bool
@@ -113,7 +115,7 @@ actor LlamaContext {
         }
     }
 
-    static func create_context(url: URL, useMetal: Bool, requestedContext: Int,
+    static func create_context(url: URL, useMetal: Bool, requestedContext: Int, compactKV: Bool,
                                control: ModelLoadControl) throws -> LlamaContext {
         try verifyGGUF(url)
         if control.isCancelled { throw CancellationError() }
@@ -156,7 +158,7 @@ actor LlamaContext {
         let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
         let trained = Int(llama_model_n_ctx_train(model))
         let contextSize = trained > 0 ? min(requestedContext, trained) : requestedContext
-        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens con \(n_threads) hilos.")
+        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens con \(n_threads) hilos y caché KV \(compactKV ? "Q8_0" : "FP16").")
 
         var ctx_params = llama_context_default_params()
         ctx_params.n_ctx = UInt32(contextSize)
@@ -165,6 +167,11 @@ actor LlamaContext {
         ctx_params.n_threads_batch = Int32(n_threads)
         ctx_params.offload_kqv = enableGPU
         ctx_params.op_offload = enableGPU
+        if compactKV {
+            ctx_params.type_k = GGML_TYPE_Q8_0
+            ctx_params.type_v = GGML_TYPE_Q8_0
+            ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
+        }
 
         let context = llama_init_from_model(model, ctx_params)
         guard let context else {
@@ -226,11 +233,32 @@ actor LlamaContext {
             + "<|im_start|>assistant\n"
     }
 
-    func completion_init(_ messages: [ChatMessage], toolPrompt: String?, control: ModelLoadControl) throws {
+    func completion_init(_ messages: [ChatMessage], toolPrompt: String?, reasoning: ReasoningLevel,
+                         maxTokens: Int, control: ModelLoadControl) throws -> Int {
         clear()
         llama_sampler_reset(sampling)
         is_done = false
-        tokens_list = tokenize(text: toolPrompt ?? chatPrompt(messages), add_bos: true, parseSpecial: true)
+        var prompt = toolPrompt ?? chatPrompt(messages)
+        remainingThought = nil
+        thoughtEndToken = nil
+        if supportsTools, prompt.hasSuffix("<|im_start|>assistant\n") {
+            if reasoning.budget(forOutputLimit: maxTokens) > 0 {
+                let open = tokenize(text: prompt + "<think>\n", add_bos: true, parseSpecial: true)
+                let budget = reasoning.budget(forOutputLimit: min(maxTokens, contextTokens - open.count))
+                let end = tokenize(text: "</think>", add_bos: false, parseSpecial: true)
+                if budget > 0, end.count == 1 {
+                    tokens_list = open
+                    remainingThought = budget
+                    thoughtEndToken = end[0]
+                }
+            }
+            if remainingThought == nil {
+                prompt += "<think>\n\n</think>\n\n"
+            }
+        }
+        if remainingThought == nil {
+            tokens_list = tokenize(text: prompt, add_bos: true, parseSpecial: true)
+        }
         guard !tokens_list.isEmpty else { throw LlamaError.invalidPrompt }
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
         for start in stride(from: 0, to: tokens_list.count, by: 512) {
@@ -244,22 +272,36 @@ actor LlamaContext {
             guard llama_decode(context, batch) == 0 else { throw LlamaError.decodeFailed }
         }
         n_cur = Int32(tokens_list.count)
+        return remainingThought ?? 0
     }
 
     func completion_loop() throws -> String {
-        var new_token_id: llama_token = 0
-
-        new_token_id = llama_sampler_sample(sampling, context, batch.n_tokens - 1)
-
-        if llama_vocab_is_eog(vocab, new_token_id) || n_cur == n_len {
-            print("\n")
+        if n_cur >= n_len {
             is_done = true
-            let new_token_str = String(cString: temporary_invalid_cchars + [0])
-            temporary_invalid_cchars.removeAll()
-            return new_token_str
+            return flushText()
+        }
+        var new_token_id: llama_token
+        if remainingThought == 0, let end = thoughtEndToken {
+            new_token_id = end
+        } else {
+            new_token_id = llama_sampler_sample(sampling, context, batch.n_tokens - 1)
+        }
+        var closingThought = false
+        if let remaining = remainingThought, let end = thoughtEndToken {
+            if new_token_id == end || llama_vocab_is_eog(vocab, new_token_id) {
+                new_token_id = end
+                remainingThought = nil
+                closingThought = true
+            } else {
+                remainingThought = remaining - 1
+            }
+        }
+        if llama_vocab_is_eog(vocab, new_token_id), !closingThought {
+            is_done = true
+            return flushText()
         }
 
-        let new_token_cchars = token_to_piece(token: new_token_id)
+        let new_token_cchars = closingThought ? Array("</think>".utf8).map { CChar(bitPattern: $0) } : token_to_piece(token: new_token_id)
         temporary_invalid_cchars.append(contentsOf: new_token_cchars)
         let new_token_str: String
         if let string = String(validatingUTF8: temporary_invalid_cchars + [0]) {
