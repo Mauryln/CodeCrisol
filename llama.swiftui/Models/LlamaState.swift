@@ -557,8 +557,8 @@ class LlamaState: ObservableObject {
         serverStarting = true
         serverAttempt = 0
         let stored = UserDefaults.standard.integer(forKey: Self.portPreference)
-        let primary = UInt16(exactly: stored).flatMap { $0 == 0 ? nil : NWEndpoint.Port(rawValue: $0) }
-            ?? NWEndpoint.Port(rawValue: 8080)!
+        let preferred = UInt16(exactly: stored) ?? 0
+        let primary = NWEndpoint.Port(rawValue: preferred == 0 ? 8080 : preferred)!
         let alternate = NWEndpoint.Port(rawValue: primary.rawValue == 8080 ? 8081 : 8080)!
         listeningCandidates = [primary, primary, alternate, .any]
         startListener()
