@@ -14,7 +14,7 @@ final class DiagnosticLog: @unchecked Sendable {
     private init() {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs", isDirectory: true)
-        file = folder.appendingPathComponent("CrucibleLLM-\(UUID().uuidString.prefix(8)).log")
+        file = folder.appendingPathComponent("CodeCrisol-\(UUID().uuidString.prefix(8)).log")
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             if FileManager.default.createFile(atPath: file.path, contents: nil) {
@@ -71,6 +71,7 @@ struct Model: Identifiable {
     var url: String
     var filename: String
     var source: String?
+    var forOpenCode = false
 }
 
 struct DownloadProgress {
@@ -210,7 +211,7 @@ class LlamaState: ObservableObject {
         let saved = UserDefaults.standard.integer(forKey: Self.contextPreference)
         requestedContextTokens = Self.contextOptions.contains(saved) ? saved : Self.contextOptions[0]
         refreshModels()
-        DiagnosticLog.shared.write("CrucibleLLM iniciado. Increased Memory Limit: \(IncreasedMemoryStatus.current.rawValue).")
+        DiagnosticLog.shared.write("CodeCrisol iniciado. Increased Memory Limit: \(IncreasedMemoryStatus.current.rawValue).")
     }
 
     func refreshModels() {
@@ -245,22 +246,42 @@ class LlamaState: ObservableObject {
         Model(
             name: "Qwen 3.5 4B · Q4_K_M",
             url: "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
-            filename: "qwen3.5-4b-Q4_K_M.gguf", source: "Bartowski · Referencia de velocidad"
+            filename: "qwen3.5-4b-Q4_K_M.gguf", source: "Bartowski · Referencia de velocidad", forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q4_K_M",
             url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
-            filename: "Qwen3.5-9B-Q4_K_M.gguf", source: "Unsloth · 5,68 GB"
+            filename: "Qwen3.5-9B-Q4_K_M.gguf", source: "Unsloth · 5,68 GB", forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q3_K_M",
             url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q3_K_M.gguf",
-            filename: "Qwen3.5-9B-Q3_K_M.gguf", source: "Unsloth · 4,67 GB"
+            filename: "Qwen3.5-9B-Q3_K_M.gguf", source: "Unsloth · 4,67 GB", forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q4_K_M",
             url: "https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
-            filename: "LM-Studio-Qwen3.5-9B-Q4_K_M.gguf", source: "LM Studio Community · 5,63 GB"
+            filename: "LM-Studio-Qwen3.5-9B-Q4_K_M.gguf", source: "LM Studio Community · 5,63 GB", forOpenCode: true
+        ),
+        Model(
+            name: "Qwen2.5-Coder 7B Instruct · Q4_K_M",
+            url: "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+            filename: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf", source: "Bartowski · 4,68 GB · Código"
+        ),
+        Model(
+            name: "DeepSeek R1 Distill 7B · Q4_K_M",
+            url: "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+            filename: "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf", source: "Bartowski · 4,68 GB · Razonamiento"
+        ),
+        Model(
+            name: "DeepSeek Coder V2 Lite Instruct · Q3_K_S",
+            url: "https://huggingface.co/bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/DeepSeek-Coder-V2-Lite-Instruct-Q3_K_S.gguf",
+            filename: "DeepSeek-Coder-V2-Lite-Instruct-Q3_K_S.gguf", source: "Bartowski · 7,49 GB · Contexto inicial sugerido de 4K"
+        ),
+        Model(
+            name: "IBM Granite 4.0 Micro · Q4_K_M",
+            url: "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/main/granite-4.0-micro-Q4_K_M.gguf",
+            filename: "granite-4.0-micro-Q4_K_M.gguf", source: "IBM Granite · 2,10 GB · Alternativa ligera"
         )
     ]
 

@@ -1,6 +1,6 @@
-# CrucibleLLM
+# CodeCrisol
 
-Run custom GGUF language models locally on iPad and iPhone. Serve them through an OpenAI-compatible HTTP API. No cloud, no subscription, no data leaves your device.
+Run GGUF models on iPad and iPhone and serve them over an OpenAI-compatible API. CodeCrisol focuses on local coding workflows with OpenCode.
 
 ## Features
 
@@ -8,12 +8,12 @@ Run custom GGUF language models locally on iPad and iPhone. Serve them through a
 - **OpenAI-compatible API** — serves `/v1/chat/completions` so any client that speaks OpenAI can talk to your iPad
 - **HuggingFace downloads** — browse and download models directly in the app
 - **Server mode** — toggle the HTTP server on/off, see your IP and port in the UI
-- **Default models** — Qwen 3.5 4B and 9B GGUF builds selected for OpenCode
+- **Model catalog** — Qwen 3.5 for OpenCode tools, plus Qwen Coder, DeepSeek and IBM Granite for chat
 - **Zero cloud** — your model, your device, your data
 
 ## Quick Start
 
-1. Sideload `CrucibleLLM.ipa` via [AltStore](https://altstore.io/) or [AltServer-Linux](https://github.com/NyaMisty/AltServer-Linux)
+1. Sideload `CodeCrisol.ipa` via [AltStore](https://altstore.io/) or [AltServer-Linux](https://github.com/NyaMisty/AltServer-Linux)
 2. Open the app, go to **View Models**, download a model (or paste a HuggingFace GGUF URL)
 3. Tap the model to load it
 4. Tap **Start Server**
@@ -48,10 +48,10 @@ El modelo se publica como `local` y corresponde al GGUF cargado en el iPad. El e
 
 ### Programación con archivos y comandos
 
-Carga **Qwen 3.5** en CrucibleLLM e inicia el servidor. Desde la carpeta que quieras abrir en OpenCode, ejecuta este script de PowerShell. Usa la ruta al repositorio y la URL que muestra el iPad.
+Carga **Qwen 3.5** en CodeCrisol e inicia el servidor. Desde la carpeta que quieras abrir en OpenCode, ejecuta este script de PowerShell. Usa la ruta al repositorio y la URL que muestra el iPad.
 
 ```powershell
-& 'C:/ruta/a/CrucibleLLM/Sync-CrucibleOpenCode.ps1' -BaseUrl http://192.168.1.62:8081/v1 -Launch
+& 'C:/ruta/a/CodeCrisol/Sync-CrucibleOpenCode.ps1' -BaseUrl http://192.168.1.62:8080/v1 -Launch
 ```
 
 El script consulta `/v1/models`, sincroniza el contexto efectivo y abre el agente `ipad-code` cuando el modelo soporta herramientas. Vuelve a ejecutarlo al cambiar el contexto, el modelo o el puerto. Puedes omitir `-Launch` para actualizar solo la configuración.
@@ -62,7 +62,7 @@ El contexto de 4.096 tokens incluye instrucciones de OpenCode, historial y respu
 
 ## Diagnóstico en el iPad
 
-Abre **Diagnóstico** para revisar la carga del GGUF, el contexto, la memoria disponible y los errores de llama.cpp. El registro se guarda en **Archivos → En mi iPad → CrucibleLLM → Logs** y se puede compartir desde la app.
+Abre **Diagnóstico** para revisar la carga del GGUF, el contexto, la memoria disponible y los errores de llama.cpp. El registro se guarda en **Archivos → En mi iPad → CodeCrisol → Logs** y se puede compartir desde la app.
 
 Durante una descarga, **Biblioteca GGUF** muestra los bytes recibidos, el porcentaje si el servidor indica el tamaño total y cuánto tiempo lleva sin recibir datos. El registro guarda el inicio, los hitos de progreso y el resultado.
 
@@ -70,9 +70,11 @@ Prueba **Metal** primero. Si un modelo falla, selecciona **CPU** y vuelve a carg
 
 El proyecto solicita `com.apple.developer.kernel.increased-memory-limit`. Si firmas el IPA de Actions por separado, incluye el entitlement en la firma con un perfil que lo admita.
 
-La tarjeta **Memoria** muestra si el permiso aparece en la firma instalada y cuánto puede asignar CrucibleLLM en ese momento. Si la firma no se puede inspeccionar, muestra **Firma no verificable**. La cifra disponible corresponde al presupuesto del proceso. La RAM física se muestra aparte.
+La tarjeta **Memoria** muestra si el permiso aparece en la firma instalada y cuánto puede asignar CodeCrisol en ese momento. Si la firma no se puede inspeccionar, muestra **Firma no verificable**. La cifra disponible corresponde al presupuesto del proceso. La RAM física se muestra aparte.
 
-El catálogo **Modelos para OpenCode** incluye Qwen 3.5 4B y 9B de Bartowski, Unsloth y LM Studio Community. Al cargar un GGUF, la tarjeta del modelo indica si esta build habilita herramientas. El script de sincronización muestra en OpenCode el nombre del GGUF cargado y su contexto efectivo.
+El catálogo incluye Qwen 3.5 4B y 9B de Bartowski, Unsloth y LM Studio Community para `ipad-code`. Qwen2.5-Coder 7B, DeepSeek R1 Distill 7B, DeepSeek Coder V2 Lite e IBM Granite 4.0 Micro se ofrecen para `ipad-chat` en esta build. La tarjeta del modelo cargado indica si tiene herramientas disponibles. El script de sincronización muestra en OpenCode el nombre del GGUF cargado y su contexto efectivo.
+
+Para actualizar desde CrucibleLLM, instala CodeCrisol con el mismo identificador y equipo de firma usados en la instalación anterior. Conserva una copia de tus GGUF si tu instalador requiere desinstalar la app.
 
 ## Building from Source
 
@@ -98,9 +100,9 @@ The workflow verifies the SHA-256 of the official llama.cpp XCFramework for the 
 - Network.framework HTTP server (no external dependencies)
 - ChatML prompt formatting with `/no_think` support for reasoning models
 
-## Created By
+## Agradecimientos
 
-[Crucible](https://github.com/vidaliya) — built on a Tuesday because we needed an iOS Ollama and nobody had made one.
+Gracias a CrucibleLLM y a [vidaliya](https://github.com/vidaliya) por construir la base de CodeCrisol. El proyecto original aportó la app nativa para iOS, la integración con llama.cpp y el servidor local sobre el que construimos el flujo de programación con OpenCode. [CrucibleLLM original](https://github.com/vidaliya/crucible-llm-server)
 
 ## License
 

@@ -1,10 +1,19 @@
-# Plan de rendimiento para CrucibleLLM
+# Plan de rendimiento para CodeCrisol
 
 ## Referencia
 
 Usa Qwen 3.5 4B Q4_K_M en el iPad Pro M5 de 12 GB, con Metal, contexto de 4.096 tokens, una petición a la vez y el iPad en primer plano. Anota la build, el nombre exacto del GGUF, la versión de iPadOS, si está cargando batería y la dirección que muestra la app. Conserva el mismo archivo y las mismas peticiones al comparar con Windows o CPU.
 
 Referencia medida en la build 4 con 36 tokens de entrada y 128 de salida. El tiempo al primer texto fue de 901 ms en el calentamiento y 184 ms de mediana en las cinco repeticiones. La salida fue de 39,0 tok/s de mediana desde Windows.
+
+### Prueba con Qwen 3.5 9B en iPad
+
+Medido el 15 de noviembre de 2026 desde Windows contra la build 7 del iPad Pro M5 con **Qwen 3.5 9B Q4_K_M y 16.384 tokens de contexto**. Cada petición generó 128 tokens. Las medianas excluyen la primera petición de cada serie.
+
+| Carga | Tokens de entrada | Mediciones | Mediana al primer texto | Mediana de salida |
+|---|---:|---:|---:|---:|
+| Consejos para documentar software | 32 | 5 | 472 ms | 23,5 tok/s |
+| Resumen de 145 reglas de documentación | 3.509 | 3 | 10,26 s | 16,6 tok/s |
 
 | Prueba | Procedimiento | Qué registrar |
 |---|---|---|
@@ -17,7 +26,7 @@ Referencia medida en la build 4 con 36 tokens de entrada y 128 de salida. El tie
 
 ## Medición desde Windows
 
-En PowerShell, pega este bloque con la URL que muestra CrucibleLLM. La primera petición calienta el modelo. Las cinco restantes muestran cifras individuales y medianas. Si quieres comparar motores, conserva el prompt y el máximo de salida. Un contexto largo se puede probar sustituyendo el prompt por el contenido del mismo archivo de texto en cada equipo.
+En PowerShell, pega este bloque con la URL que muestra CodeCrisol. La primera petición calienta el modelo. Las cinco restantes muestran cifras individuales y medianas. Si quieres comparar motores, conserva el prompt y el máximo de salida. Un contexto largo se puede probar sustituyendo el prompt por el contenido del mismo archivo de texto en cada equipo.
 
 ```powershell
 $env:CRUCIBLE_API_URL = 'http://192.168.1.62:8080/v1'

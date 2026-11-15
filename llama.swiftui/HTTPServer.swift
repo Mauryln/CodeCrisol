@@ -171,7 +171,7 @@ final class HTTPServer {
 
         switch path {
         case "/":
-            sendResponse(connection: connection, status: "200 OK", body: "Crucible LLM Server is running")
+            sendResponse(connection: connection, status: "200 OK", body: "CodeCrisol is running")
         case "/v1/models", "/api/tags":
             handleModels(connection: connection)
         case "/v1/chat/completions":

@@ -31,7 +31,7 @@ function Read-ConfigMap([string]$Path) {
 
 $endpoint = $BaseUrl.AbsoluteUri.TrimEnd('/')
 if ($BaseUrl.Scheme -notin @('http', 'https') -or $BaseUrl.AbsolutePath.TrimEnd('/') -ne '/v1') {
-    throw 'Usa la URL completa que muestra CrucibleLLM, terminada en /v1.'
+    throw 'Usa la URL completa que muestra CodeCrisol, terminada en /v1.'
 }
 
 $response = Invoke-RestMethod -Uri "$endpoint/models" -TimeoutSec 10
@@ -62,6 +62,7 @@ $supportsTools = $model.supports_tools -eq $true
 $context = [int]$model.context_length
 $output = if ($supportsTools) { [math]::Min(4096, [math]::Max(256, [int]($context / 4))) } else { [math]::Min(500, [math]::Max(64, [int]($context / 4))) }
 $provider['settings']['baseURL'] = $endpoint
+$provider['name'] = 'CodeCrisol (iPad)'
 $provider['body']['crucible_opencode_text'] = $true
 if ($supportsTools) {
     [void]$provider['body'].Remove('tool_choice')

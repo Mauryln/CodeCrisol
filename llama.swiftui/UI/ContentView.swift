@@ -26,6 +26,9 @@ struct ContentView: View {
                     }
                 }
                 library
+                Link("Gracias a CrucibleLLM, la base de CodeCrisol.",
+                     destination: URL(string: "https://github.com/vidaliya/crucible-llm-server")!)
+                    .font(.footnote)
             }
             .frame(maxWidth: 980)
             .padding(.horizontal, 24)
@@ -44,11 +47,11 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("CRUCIBLE", systemImage: "cpu")
+            Label("SERVIDOR LOCAL", systemImage: "cpu")
                 .font(.system(.caption, design: .monospaced, weight: .semibold))
                 .tracking(3)
                 .foregroundStyle(accent)
-            Text("Servidor local")
+            Text("CodeCrisol")
                 .font(.system(.largeTitle, design: .default, weight: .bold))
             Button { showLogs = true } label: { Label("Diagnóstico", systemImage: "text.alignleft") }
                 .buttonStyle(.bordered)
@@ -136,7 +139,7 @@ struct ContentView: View {
             TimelineView(.periodic(from: .now, by: 2)) { _ in
                 let available = Double(os_proc_available_memory()) / 1_073_741_824
                 let physical = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-                Text("\(available.formatted(.number.precision(.fractionLength(2)))) GiB disponibles para CrucibleLLM · \(physical.formatted(.number.precision(.fractionLength(1)))) GiB de RAM física")
+                Text("\(available.formatted(.number.precision(.fractionLength(2)))) GiB disponibles para CodeCrisol · \(physical.formatted(.number.precision(.fractionLength(1)))) GiB de RAM física")
                     .font(.footnote)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -202,7 +205,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
             }
-            Text("También puedes copiar un GGUF en Archivos → En mi iPad → CrucibleLLM.")
+            Text("También puedes copiar un GGUF en Archivos → En mi iPad → CodeCrisol.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             HStack {
@@ -247,14 +250,20 @@ struct ContentView: View {
                     DownloadButton(state: state, model: model, downloaded: true)
                 }
             }
-            if !state.undownloadedModels.isEmpty {
-                Text("Modelos para OpenCode").font(.headline)
-                ForEach(state.undownloadedModels) { model in
-                    DownloadButton(state: state, model: model, downloaded: false)
-                }
-            }
+            catalogSection("Programación con herramientas · ipad-code", models: state.undownloadedModels.filter(\.forOpenCode))
+            catalogSection("Código y razonamiento · ipad-chat", models: state.undownloadedModels.filter { !$0.forOpenCode })
         }
         .panel()
+    }
+
+    @ViewBuilder
+    private func catalogSection(_ title: String, models: [Model]) -> some View {
+        if !models.isEmpty {
+            Text(title).font(.headline)
+            ForEach(models) { model in
+                DownloadButton(state: state, model: model, downloaded: false)
+            }
+        }
     }
 
     private var chatPanel: some View {
@@ -299,7 +308,7 @@ private struct DiagnosticsView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Archivos › En mi iPad › CrucibleLLM › Logs")
+                Text("Archivos › En mi iPad › CodeCrisol › Logs")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 ScrollView {

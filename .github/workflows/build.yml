@@ -54,10 +54,10 @@ jobs:
           echo "Found app at: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
-          zip -r CrucibleLLM.ipa Payload/
+          zip -r CodeCrisol.ipa Payload/
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: CrucibleLLM
-          path: CrucibleLLM.ipa
+          name: CodeCrisol
+          path: CodeCrisol.ipa
