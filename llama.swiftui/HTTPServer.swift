@@ -255,6 +255,7 @@ final class HTTPServer {
             return
         }
         let stream = json["stream"] as? Bool == true
+        let reusePrompt = json["cache_prompt"] as? Bool ?? true
         let includeUsage = (json["stream_options"] as? [String: Any])?["include_usage"] as? Bool == true
         let connectionID = ObjectIdentifier(connection)
         requests[connectionID] = Task { @MainActor in
@@ -307,13 +308,18 @@ final class HTTPServer {
                     lastTextSend = now
                     textChunks += 1
                 }
-                let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true, toolPrompt: toolPrompt) { piece in
+                let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true, toolPrompt: toolPrompt,
+                                                           usePromptCache: reusePrompt) { piece in
                     try await emit(output.append(piece))
                 }
                 try await emit(output.append("", final: true), final: true)
                 let calls = try toolChat?.calls(output.blocks) ?? []
                 let finish = calls.isEmpty ? usage.finishReason : "tool_calls"
-                let counts = ["prompt_tokens": usage.prompt, "completion_tokens": usage.output, "total_tokens": usage.prompt + usage.output]
+                let counts: [String: Any] = [
+                    "prompt_tokens": usage.prompt, "completion_tokens": usage.output,
+                    "total_tokens": usage.prompt + usage.output,
+                    "prompt_tokens_details": ["cached_tokens": usage.cachedPrompt]
+                ]
                 if stream {
                     if !calls.isEmpty {
                         try await sendChunk(["tool_calls": calls.enumerated().map { $0.element.json(index: $0.offset) }])

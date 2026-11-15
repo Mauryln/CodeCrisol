@@ -60,3 +60,51 @@ enum IncreasedMemoryStatus: String {
         return .unknown
     }
 }
+
+#if os(iOS)
+import Darwin
+import Metal
+import os
+
+struct RuntimeMemorySample {
+    private static let device = MTLCreateSystemDefaultDevice()
+    let available = UInt64(os_proc_available_memory())
+    let physical = ProcessInfo.processInfo.physicalMemory
+    let metalAllocated: UInt64? = Self.device.map { UInt64($0.currentAllocatedSize) }
+    let metalBudget: UInt64? = Self.device?.recommendedMaxWorkingSetSize
+    let footprint: UInt64? = Self.processFootprint()
+
+    static func gib(_ bytes: UInt64) -> String {
+        (Double(bytes) / 1_073_741_824).formatted(.number.precision(.fractionLength(2))) + " GiB"
+    }
+
+    private static func processFootprint() -> UInt64? {
+        var info = task_vm_info_data_t()
+        let capacity = MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+        var count = mach_msg_type_number_t(capacity)
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: capacity) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS ? info.phys_footprint : nil
+    }
+}
+
+final class KVAllocation {
+    private let lock = NSLock()
+    private var allocations: [String: UInt64] = [:]
+
+    func record(_ line: String) {
+        guard let marker = line.range(of: " KV buffer size ="),
+              let amount = line[marker.upperBound...].split(whereSeparator: \.isWhitespace).first,
+              let mib = Double(amount), mib.isFinite, mib >= 0, mib < 1_000_000 else { return }
+        let device = line[..<marker.lowerBound].split(whereSeparator: \.isWhitespace).last.map(String.init) ?? "?"
+        lock.withLock { allocations[device] = UInt64(mib * 1_048_576) }
+    }
+
+    var bytes: UInt64? {
+        lock.withLock { allocations.isEmpty ? nil : allocations.values.reduce(0, +) }
+    }
+}
+#endif

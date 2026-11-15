@@ -78,6 +78,10 @@ En **Modelo**, el control **Pensamiento** se aplica a la siguiente petición de 
 
 **Caché KV compacta (Q8_0)** reduce la memoria de las claves y valores de atención con Flash Attention. Actívala y usa **Aplicar y recargar**. El diagnóstico muestra la memoria KV reservada. Si un GGUF falla al iniciar con ese ajuste, vuelve a FP16 y recarga.
 
+CodeCrisol recuerda los ajustes de cada GGUF tras una carga exitosa y restaura el perfil al seleccionarlo de nuevo. Durante el prefill, la app muestra los tokens de entrada procesados y permite detener la generación. **Memoria** separa la huella del proceso, las asignaciones de Metal, su presupuesto recomendado y la reserva KV cuando el motor la reporta.
+
+Para Qwen 3.5, el servidor conserva un punto de restauración en memoria y lo reutiliza si el siguiente prompt comparte ese prefijo exacto. El log y \`usage.prompt_tokens_details.cached_tokens\` indican cuántos tokens se ahorraron. Envía \`"cache_prompt": false\` en una petición para obtener una medición en frío.
+
 Para actualizar desde CrucibleLLM, instala CodeCrisol con el mismo identificador y equipo de firma usados en la instalación anterior. Conserva una copia de tus GGUF si tu instalador requiere desinstalar la app.
 
 ## Building from Source

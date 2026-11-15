@@ -1,5 +1,4 @@
 import SwiftUI
-import os
 
 struct ContentView: View {
     @ObservedObject var state: LlamaState
@@ -157,9 +156,19 @@ struct ContentView: View {
             Text("Increased Memory Limit · \(IncreasedMemoryStatus.current.rawValue)")
                 .font(.subheadline)
             TimelineView(.periodic(from: .now, by: 2)) { _ in
-                let available = Double(os_proc_available_memory()) / 1_073_741_824
-                let physical = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-                Text("\(available.formatted(.number.precision(.fractionLength(2)))) GiB disponibles para CodeCrisol · \(physical.formatted(.number.precision(.fractionLength(1)))) GiB de RAM física")
+                let memory = RuntimeMemorySample()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Disponible para la app: \(RuntimeMemorySample.gib(memory.available)) · RAM física: \(RuntimeMemorySample.gib(memory.physical))")
+                    if let footprint = memory.footprint {
+                        Text("Huella del proceso: \(RuntimeMemorySample.gib(footprint))")
+                    }
+                    if let allocated = memory.metalAllocated, let budget = memory.metalBudget {
+                        Text("Metal: \(RuntimeMemorySample.gib(allocated)) asignados · \(RuntimeMemorySample.gib(budget)) recomendados")
+                    }
+                    if let kv = state.activeKVBytes {
+                        Text("Caché KV reservada: \(RuntimeMemorySample.gib(kv)) · \(state.activeCacheLabel)")
+                    }
+                }
                     .font(.footnote)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -208,11 +217,27 @@ struct ContentView: View {
                 }
             }
             if state.isGenerating {
+                prefillIndicator
                 Button("Detener generación", role: .destructive) { state.stopGeneration() }
                     .buttonStyle(.bordered)
             }
         }
         .panel()
+    }
+
+    @ViewBuilder
+    private var prefillIndicator: some View {
+        if let progress = state.prefillProgress {
+            ProgressView(value: Double(progress.processed), total: Double(progress.total)) {
+                Text("Procesando entrada · \(progress.processed.formatted()) de \(progress.total.formatted()) tokens")
+                    .font(.footnote)
+            }
+            if progress.cached > 0 {
+                Text("\(progress.cached.formatted()) tokens reutilizados")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var library: some View {
@@ -296,6 +321,7 @@ struct ContentView: View {
                 }
                 TextField("Escribe un mensaje", text: $prompt)
                     .textFieldStyle(.roundedBorder)
+                prefillIndicator
                 HStack {
                     Button("Enviar") {
                         let text = prompt

@@ -31,16 +31,42 @@ final class ModelLoadControl: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private var fraction: Float = 0
+    private var lastSample: UInt64 = 0
+    private var peakFootprint: UInt64?
+    private var peakMetal: UInt64?
 
     func cancel() { lock.withLock { cancelled = true } }
     var isCancelled: Bool { lock.withLock { cancelled } }
     var progress: Float { lock.withLock { fraction } }
 
     func update(_ progress: Float) -> Bool {
-        lock.withLock {
+        sampleMemory()
+        return lock.withLock {
             fraction = progress
             return !cancelled
         }
+    }
+
+    func sampleMemory(force: Bool = false) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let shouldSample = lock.withLock {
+            guard force || now - lastSample >= 1_000_000_000 else { return false }
+            lastSample = now
+            return true
+        }
+        guard shouldSample else { return }
+        let snapshot = RuntimeMemorySample()
+        lock.withLock {
+            if let bytes = snapshot.footprint { peakFootprint = max(peakFootprint ?? 0, bytes) }
+            if let bytes = snapshot.metalAllocated { peakMetal = max(peakMetal ?? 0, bytes) }
+        }
+    }
+
+    func logMemoryPeak(_ phase: String) {
+        let samples = lock.withLock { (peakFootprint, peakMetal) }
+        let footprint = samples.0.map(RuntimeMemorySample.gib) ?? "sin lectura"
+        let metal = samples.1.map(RuntimeMemorySample.gib) ?? "sin lectura"
+        DiagnosticLog.shared.write("\(phase) · máximo observado · Huella \(footprint) · Metal \(metal).", source: "Memoria")
     }
 }
 
@@ -73,6 +99,8 @@ actor LlamaContext {
     private var temporary_invalid_cchars: [CChar]
     private var remainingThought: Int?
     private var thoughtEndToken: llama_token?
+    private var prefixCheckpoint: (tokens: [llama_token], state: Data)?
+    nonisolated let kvBytes: UInt64?
 
     nonisolated let contextTokens: Int
     nonisolated let supportsTools: Bool
@@ -81,9 +109,10 @@ actor LlamaContext {
 
     var n_decode: Int32 = 0
 
-    init(model: OpaquePointer, context: OpaquePointer) {
+    init(model: OpaquePointer, context: OpaquePointer, kvBytes: UInt64?) {
         self.model = model
         self.context = context
+        self.kvBytes = kvBytes
         self.contextTokens = Int(llama_n_ctx_seq(context))
         var architecture = [CChar](repeating: 0, count: 64)
         let length = llama_model_meta_val_str(model, "general.architecture", &architecture, 64)
@@ -120,11 +149,21 @@ actor LlamaContext {
         try verifyGGUF(url)
         if control.isCancelled { throw CancellationError() }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        control.sampleMemory(force: true)
         DiagnosticLog.shared.write("GGUF \(url.lastPathComponent), \(size) bytes. Memoria disponible para la app: \(os_proc_available_memory()) bytes. Motor: \(useMetal ? "Metal" : "CPU").")
-        llama_log_set({ level, message, _ in
+        let allocation = KVAllocation()
+        let logger: ggml_log_callback = { level, message, data in
             guard level != GGML_LOG_LEVEL_DEBUG, let message else { return }
-            DiagnosticLog.shared.write(String(cString: message), source: "llama.cpp")
-        }, nil)
+            let line = String(cString: message)
+            if let data { Unmanaged<KVAllocation>.fromOpaque(data).takeUnretainedValue().record(line) }
+            DiagnosticLog.shared.write(line, source: "llama.cpp")
+        }
+        llama_log_set(logger, Unmanaged.passUnretained(allocation).toOpaque())
+        defer {
+            llama_log_set(logger, nil)
+            control.sampleMemory(force: true)
+            control.logMemoryPeak("Carga")
+        }
         llama_backend_init()
         var model_params = llama_model_default_params()
         model_params.progress_callback_user_data = Unmanaged.passUnretained(control).toOpaque()
@@ -154,6 +193,7 @@ actor LlamaContext {
             llama_backend_free()
             throw CancellationError()
         }
+        control.sampleMemory(force: true)
 
         let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
         let trained = Int(llama_model_n_ctx_train(model))
@@ -180,7 +220,7 @@ actor LlamaContext {
             throw LlamaError.couldNotInitializeContext
         }
 
-        return LlamaContext(model: model, context: context)
+        return LlamaContext(model: model, context: context, kvBytes: allocation.bytes)
     }
 
     func model_info() -> String {
@@ -234,8 +274,9 @@ actor LlamaContext {
     }
 
     func completion_init(_ messages: [ChatMessage], toolPrompt: String?, reasoning: ReasoningLevel,
-                         maxTokens: Int, control: ModelLoadControl) throws -> Int {
-        clear()
+                         maxTokens: Int, cachePrompt: Bool, control: ModelLoadControl,
+                         onProgress: @MainActor (Int, Int, Int) -> Void) async throws -> (thought: Int, cached: Int) {
+        temporary_invalid_cchars.removeAll()
         llama_sampler_reset(sampling)
         is_done = false
         var prompt = toolPrompt ?? chatPrompt(messages)
@@ -261,7 +302,28 @@ actor LlamaContext {
         }
         guard !tokens_list.isEmpty else { throw LlamaError.invalidPrompt }
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
-        for start in stride(from: 0, to: tokens_list.count, by: 512) {
+        let memory = llama_get_memory(context)
+        let canCache = cachePrompt && supportsTools
+        var cached = 0
+        let flags = UInt32(LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)
+        if canCache, let saved = prefixCheckpoint,
+           saved.tokens.count < tokens_list.count, tokens_list.starts(with: saved.tokens) {
+            let restored = saved.state.withUnsafeBytes {
+                llama_state_seq_set_data_ext(context, $0.bindMemory(to: UInt8.self).baseAddress, $0.count, 0, flags)
+            }
+            if restored == saved.state.count, llama_memory_seq_rm(memory, 0, Int32(saved.tokens.count), -1) {
+                cached = saved.tokens.count
+            }
+        }
+        if cached == 0 {
+            prefixCheckpoint = nil
+            llama_memory_clear(memory, true)
+        }
+        // Keep the final assistant delimiter out of the snapshot so the prefix can
+        // still match when OpenCode serializes the following tool call or message.
+        let checkpointAt = max(0, (tokens_list.count - 64) / 512 * 512)
+        await onProgress(cached, tokens_list.count, cached)
+        for start in stride(from: cached, to: tokens_list.count, by: 512) {
             try Task.checkCancellation()
             if control.isCancelled { throw CancellationError() }
             llama_batch_clear(&batch)
@@ -270,9 +332,25 @@ actor LlamaContext {
                 llama_batch_add(&batch, tokens_list[index], Int32(index), [0], index == tokens_list.count - 1)
             }
             guard llama_decode(context, batch) == 0 else { throw LlamaError.decodeFailed }
+            if canCache, end == checkpointAt, end >= 1024 {
+                prefixCheckpoint = nil
+                let bytes = llama_state_seq_get_size_ext(context, 0, flags)
+                let budget = min(96 * 1_048_576, os_proc_available_memory() / 8)
+                if bytes > 0, bytes <= budget {
+                    var snapshot = Data(count: bytes)
+                    let written = snapshot.withUnsafeMutableBytes {
+                        llama_state_seq_get_data_ext(context, $0.bindMemory(to: UInt8.self).baseAddress, $0.count, 0, flags)
+                    }
+                    if written == bytes {
+                        prefixCheckpoint = (Array(tokens_list.prefix(end)), snapshot)
+                    }
+                }
+            }
+            control.sampleMemory()
+            await onProgress(end, tokens_list.count, cached)
         }
         n_cur = Int32(tokens_list.count)
-        return remainingThought ?? 0
+        return (remainingThought ?? 0, cached)
     }
 
     func completion_loop() throws -> String {
@@ -334,6 +412,7 @@ actor LlamaContext {
     }
 
     func bench(pp: Int, tg: Int, pl: Int, nr: Int = 1) -> String {
+        clear()
         var pp_avg: Double = 0
         var tg_avg: Double = 0
 
@@ -432,9 +511,18 @@ actor LlamaContext {
     }
 
     func clear() {
+        prefixCheckpoint = nil
         tokens_list.removeAll()
         temporary_invalid_cchars.removeAll()
         llama_memory_clear(llama_get_memory(context), true)
+    }
+
+    func finishRequest() {
+        if prefixCheckpoint == nil { clear() }
+        else {
+            tokens_list.removeAll()
+            temporary_invalid_cchars.removeAll()
+        }
     }
 
     private func tokenize(text: String, add_bos: Bool, parseSpecial: Bool) -> [llama_token] {
