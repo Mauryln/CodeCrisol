@@ -72,6 +72,90 @@ struct Model: Identifiable {
     var status: String?
 }
 
+struct DownloadProgress {
+    let received: Int64
+    let total: Int64?
+    let lastUpdate: Date
+
+    var fraction: Double? {
+        total.map { min(Double(received) / Double($0), 1) }
+    }
+
+    var detail: String {
+        let bytes = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
+        guard let total, let fraction else { return "\(bytes) recibidos" }
+        let size = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        return "\(Int(fraction * 100)) % · \(bytes) de \(size)"
+    }
+}
+
+private final class ModelDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    let id = UUID()
+    let destination: URL
+    private let update: (UUID, DownloadProgress) -> Void
+    private let finish: (UUID, Result<Void, Error>) -> Void
+    private var task: URLSessionDownloadTask?
+    private var result: Result<Void, Error>?
+    private var lastLoggedBytes: Int64 = 0
+    private var lastLoggedPercent = -10
+    private var lastUpdate = Date.distantPast
+    private let started = Date()
+
+    init(destination: URL, update: @escaping (UUID, DownloadProgress) -> Void,
+         finish: @escaping (UUID, Result<Void, Error>) -> Void) {
+        self.destination = destination
+        self.update = update
+        self.finish = finish
+    }
+
+    func start(_ url: URL) {
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        task = session.downloadTask(with: url)
+        task?.resume()
+        session.finishTasksAndInvalidate()
+    }
+
+    func cancel() { task?.cancel() }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        let now = Date()
+        let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil
+        let progress = DownloadProgress(received: totalBytesWritten, total: total, lastUpdate: now)
+        if now.timeIntervalSince(lastUpdate) >= 0.3 || total == totalBytesWritten {
+            lastUpdate = now
+            update(id, progress)
+        }
+        let percent = progress.fraction.map { Int($0 * 100) }
+        if percent.map({ $0 >= lastLoggedPercent + 10 || ($0 == 100 && lastLoggedPercent < 100) })
+            ?? (totalBytesWritten - lastLoggedBytes >= 64 * 1024 * 1024) {
+            lastLoggedBytes = totalBytesWritten
+            lastLoggedPercent = percent ?? lastLoggedPercent
+            DiagnosticLog.shared.write("\(destination.lastPathComponent) · \(progress.detail)", source: "Descarga")
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        result = Result {
+            let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                throw NSError(domain: "Descarga", code: code,
+                              userInfo: [NSLocalizedDescriptionKey: "El servidor respondió HTTP \(code)."])
+            }
+            try LlamaContext.verifyGGUF(location)
+            let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            try FileManager.default.moveItem(at: location, to: destination)
+            let seconds = Int(Date().timeIntervalSince(started))
+            DiagnosticLog.shared.write("HTTP \(code) · \(size) bytes verificados y guardados en \(seconds) s.", source: "Descarga")
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let outcome = result ?? .failure(error ?? URLError(.unknown))
+        finish(id, outcome)
+    }
+}
+
 @MainActor
 class LlamaState: ObservableObject {
     @Published var messageLog = ""
@@ -83,6 +167,7 @@ class LlamaState: ObservableObject {
     @Published private(set) var stoppingLoad = false
     @Published private(set) var busy = false
     @Published private(set) var transfer: String?
+    @Published private(set) var downloadProgress: DownloadProgress?
     @Published var useMetal = true
     let NS_PER_S = 1_000_000_000.0
 
@@ -93,6 +178,7 @@ class LlamaState: ObservableObject {
     private var llamaContext: LlamaContext?
     private var loadControl: ModelLoadControl?
     private var transferTask: Task<Void, Never>?
+    private var activeDownload: ModelDownload?
     private var generationControl: ModelLoadControl?
     private var waitingRequests = 0
     var hasModel: Bool { llamaContext != nil }
@@ -246,46 +332,57 @@ class LlamaState: ObservableObject {
     }
 
     func download(_ url: URL, filename: String) {
-        guard transferTask == nil, url.scheme?.lowercased() == "https", url.host != nil,
+        guard transfer == nil, url.scheme?.lowercased() == "https", url.host != nil,
               filename == (filename as NSString).lastPathComponent,
               (filename as NSString).pathExtension.lowercased() == "gguf" else {
             report("Usa un enlace HTTPS directo a un archivo .gguf.")
             return
         }
-        transfer = filename
-        DiagnosticLog.shared.write("Descargando \(filename).")
         let destination = getDocumentsDirectory().appendingPathComponent(filename)
-        transferTask = Task {
-            defer {
-                transfer = nil
-                transferTask = nil
-            }
-            do {
-                let (file, response) = try await URLSession.shared.download(from: url)
-                defer { try? FileManager.default.removeItem(at: file) }
-                try Task.checkCancellation()
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    report("Descarga rechazada por el servidor (HTTP \(code)).")
-                    return
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            report("Ya hay un archivo llamado \(filename).")
+            return
+        }
+        transfer = filename
+        downloadProgress = DownloadProgress(received: 0, total: nil, lastUpdate: Date())
+        DiagnosticLog.shared.write("Iniciando \(filename) desde \(url.host ?? "").", source: "Descarga")
+        let download = ModelDownload(destination: destination) { [weak self] id, progress in
+            Task { @MainActor in
+                guard let self, self.activeDownload?.id == id else { return }
+                if progress.received >= (self.downloadProgress?.received ?? 0) {
+                    self.downloadProgress = progress
                 }
-                try LlamaContext.verifyGGUF(file)
-                try FileManager.default.moveItem(at: file, to: destination)
-                refreshModels()
-                report("\(filename) guardado.")
-            } catch {
-                let message = Task.isCancelled ? "Descarga cancelada." : "Falló la descarga: \(error.localizedDescription)"
-                report(message)
+            }
+        } finish: { [weak self] id, result in
+            Task { @MainActor in
+                guard let self, self.activeDownload?.id == id else { return }
+                self.activeDownload = nil
+                self.transfer = nil
+                self.downloadProgress = nil
+                switch result {
+                case .success:
+                    self.refreshModels()
+                    self.report("\(filename) guardado.")
+                case .failure(let error):
+                    let cancelled = (error as? URLError)?.code == .cancelled
+                    self.report(cancelled ? "Descarga cancelada." : "Falló la descarga: \(error.localizedDescription)")
+                }
             }
         }
+        activeDownload = download
+        download.start(url)
     }
 
     func cancelDownload() {
+        if let activeDownload {
+            DiagnosticLog.shared.write("Cancelación solicitada para \(activeDownload.destination.lastPathComponent).", source: "Descarga")
+            activeDownload.cancel()
+        }
         transferTask?.cancel()
     }
 
     func importModel(_ source: URL) {
-        guard transferTask == nil, source.pathExtension.lowercased() == "gguf" else { return }
+        guard transfer == nil, source.pathExtension.lowercased() == "gguf" else { return }
         transfer = source.lastPathComponent
         let destination = getDocumentsDirectory().appendingPathComponent(source.lastPathComponent)
         transferTask = Task {
@@ -320,7 +417,7 @@ class LlamaState: ObservableObject {
         let start = DispatchTime.now().uptimeNanoseconds
         var firstOutput: UInt64?
         do {
-            let usage = try await generate(text: text, maxTokens: Int.max, parseSpecial: false) { piece in
+            let usage = try await generate([ChatMessage(role: "user", content: text)], maxTokens: Int.max) { piece in
                 if firstOutput == nil { firstOutput = DispatchTime.now().uptimeNanoseconds }
                 self.messageLog += piece
             }
@@ -411,7 +508,7 @@ class LlamaState: ObservableObject {
         report("Error del servidor: \(error.localizedDescription)")
     }
 
-    func generate(text: String, maxTokens: Int, parseSpecial: Bool,
+    func generate(_ messages: [ChatMessage], maxTokens: Int,
                   fromServer: Bool = false,
                   onText: (String) async throws -> Void) async throws -> CompletionUsage {
         if fromServer, busy {
@@ -435,7 +532,7 @@ class LlamaState: ObservableObject {
         }
 
         do {
-            try await llamaContext.completion_init(text: text, parseSpecial: parseSpecial, control: control)
+            try await llamaContext.completion_init(messages, control: control)
             let prompt = Int(await llamaContext.n_cur)
             let available = Int(await llamaContext.n_len) - prompt
             let limit = min(maxTokens, available)

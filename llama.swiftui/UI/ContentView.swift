@@ -145,13 +145,35 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
             if let transfer = state.transfer {
-                HStack {
-                    ProgressView()
-                    Text(transfer).lineLimit(1)
-                    Spacer()
-                    Button("Cancelar") { state.cancelDownload() }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(state.downloadProgress == nil ? "Importando modelo" : "Descargando modelo")
+                                .font(.headline)
+                            Text(transfer).lineLimit(1).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Cancelar", role: .destructive) { state.cancelDownload() }
+                            .buttonStyle(.bordered)
+                    }
+                    if let progress = state.downloadProgress {
+                        if let fraction = progress.fraction {
+                            ProgressView(value: fraction)
+                        } else {
+                            ProgressView()
+                        }
+                        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                            let seconds = max(0, Int(timeline.date.timeIntervalSince(progress.lastUpdate)))
+                            Text(seconds >= 10 ? "\(progress.detail) · Sin datos nuevos hace \(seconds) s" : progress.detail)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ProgressView()
+                    }
                 }
                 .font(.subheadline)
+                .panel()
             }
             if !state.downloadedModels.isEmpty {
                 Text("En el iPad").font(.headline)

@@ -52,6 +52,8 @@ El contexto de 4.096 tokens incluye instrucciones de OpenCode, historial y respu
 
 Abre **Diagnóstico** para revisar la carga del GGUF, el contexto, la memoria disponible y los errores de llama.cpp. El registro se guarda en **Archivos → En mi iPad → CrucibleLLM → Logs** y se puede compartir desde la app.
 
+Durante una descarga, **Biblioteca GGUF** muestra los bytes recibidos, el porcentaje si el servidor indica el tamaño total y cuánto tiempo lleva sin recibir datos. El registro guarda el inicio, los hitos de progreso y el resultado.
+
 Prueba **Metal** primero. Si un modelo falla, selecciona **CPU** y vuelve a cargarlo para comprobar si el fallo depende de la GPU. Puedes cancelar la carga, detener una generación y liberar el modelo. Inicia la API cuando el modelo indique que está listo.
 
 El proyecto solicita `com.apple.developer.kernel.increased-memory-limit`. Si firmas el IPA de Actions por separado, incluye el entitlement en la firma con un perfil que lo admita.

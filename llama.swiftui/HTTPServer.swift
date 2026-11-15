@@ -179,18 +179,10 @@ class HTTPServer {
             return
         }
 
-        // ChatML for the Qwen models used by the OpenCode setup.
-        var prompt = ""
-        let hasSystemMessage = messages.contains { ($0["role"] as? String) == "system" }
-        if !hasSystemMessage {
-            prompt += "<|im_start|>system\n/no_think\nBe concise and helpful.<|im_end|>\n"
-        }
-        for msg in messages {
+        let chat = messages.map { msg in
             let role = msg["role"] as? String == "developer" ? "system" : msg["role"] as? String ?? "user"
-            let content = msg["content"] as? String ?? ""
-            prompt += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
+            return ChatMessage(role: role, content: msg["content"] as? String ?? "")
         }
-        prompt += "<|im_start|>assistant\n"
 
         let maxTokens = json["max_completion_tokens"] as? Int ?? json["max_tokens"] as? Int ?? 500
         guard maxTokens > 0 else {
@@ -224,7 +216,7 @@ class HTTPServer {
                 try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
             }
             do {
-                let usage = try await llamaState.generate(text: prompt, maxTokens: maxTokens, parseSpecial: true, fromServer: true) { piece in
+                let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true) { piece in
                     if stream {
                         try await sendChunk(["content": piece])
                     } else {

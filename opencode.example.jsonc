@@ -5,9 +5,10 @@
     "ipad-chat": {
       "description": "Conversación de texto con el modelo del iPad",
       "mode": "primary",
-      "system": "Responde a las preguntas del usuario. Puedes explicar código y proponer cambios en texto.",
+      "system": "Responde en español a la última petición del usuario. La respuesta es texto de conversación.",
       "permissions": [
-        { "action": "*", "resource": "*", "effect": "deny" }
+        { "action": "*", "resource": "*", "effect": "deny" },
+        { "action": "execute", "resource": "*", "effect": "deny" }
       ]
     }
   },

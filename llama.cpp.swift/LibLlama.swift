@@ -22,6 +22,11 @@ enum LlamaError: LocalizedError {
     }
 }
 
+struct ChatMessage: Sendable {
+    let role: String
+    let content: String
+}
+
 final class ModelLoadControl: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
@@ -186,11 +191,37 @@ actor LlamaContext {
         return batch.n_tokens;
     }
 
-    func completion_init(text: String, parseSpecial: Bool, control: ModelLoadControl) throws {
+    private func chatPrompt(_ messages: [ChatMessage]) -> String {
+        if let template = llama_model_chat_template(model, nil) {
+            var allocations: [UnsafeMutablePointer<CChar>] = []
+            defer { allocations.forEach { free($0) } }
+            var chat: [llama_chat_message] = []
+            for message in messages {
+                guard let role = strdup(message.role) else { break }
+                allocations.append(role)
+                guard let content = strdup(message.content) else { break }
+                allocations.append(content)
+                chat.append(llama_chat_message(role: UnsafePointer(role), content: UnsafePointer(content)))
+            }
+            if chat.count == messages.count {
+                let length = llama_chat_apply_template(template, chat, chat.count, true, nil, 0)
+                if length > 0, length <= 2_097_152 {
+                    var buffer = [CChar](repeating: 0, count: Int(length) + 1)
+                    let written = llama_chat_apply_template(template, chat, chat.count, true, &buffer, length + 1)
+                    if written == length { return String(cString: buffer) }
+                }
+            }
+        }
+        DiagnosticLog.shared.write("Plantilla GGUF ausente o no reconocida. Se usará ChatML.", source: "llama.cpp")
+        return messages.map { "<|im_start|>\($0.role)\n\($0.content)<|im_end|>\n" }.joined()
+            + "<|im_start|>assistant\n"
+    }
+
+    func completion_init(_ messages: [ChatMessage], control: ModelLoadControl) throws {
         clear()
         llama_sampler_reset(sampling)
         is_done = false
-        tokens_list = tokenize(text: text, add_bos: true, parseSpecial: parseSpecial)
+        tokens_list = tokenize(text: chatPrompt(messages), add_bos: true, parseSpecial: true)
         n_len = Int32(llama_n_ctx(context))
         guard !tokens_list.isEmpty else { throw LlamaError.invalidPrompt }
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
