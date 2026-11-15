@@ -20,7 +20,8 @@
         "baseURL": "http://192.168.1.50:8080/v1"
       },
       "body": {
-        "tool_choice": "none"
+        "tool_choice": "none",
+        "crucible_opencode_text": true
       },
       "models": {
         "local": {

@@ -179,9 +179,18 @@ class HTTPServer {
             return
         }
 
+        let textOnlyOpenCode = json["crucible_opencode_text"] as? Bool == true
+        let worktreeHint = "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using \u{0060}execute\u{0060} to call \u{0060}tools.opencode.session_move\u{0060} and make the worktree the session's working directory."
         let chat = messages.map { msg in
             let role = msg["role"] as? String == "developer" ? "system" : msg["role"] as? String ?? "user"
-            return ChatMessage(role: role, content: msg["content"] as? String ?? "")
+            var content = msg["content"] as? String ?? ""
+            // OpenCode 2.3 appends this hint even when its execute tool is disabled.
+            if textOnlyOpenCode, role == "system",
+               let hint = content.range(of: "\n" + worktreeHint, options: .backwards),
+               content[hint.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                content.removeSubrange(hint.lowerBound...)
+            }
+            return ChatMessage(role: role, content: content)
         }
 
         let maxTokens = json["max_completion_tokens"] as? Int ?? json["max_tokens"] as? Int ?? 500
