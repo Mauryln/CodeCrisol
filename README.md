@@ -70,6 +70,10 @@ Prueba **Metal** primero. Si un modelo falla, selecciona **CPU** y vuelve a carg
 
 El proyecto solicita `com.apple.developer.kernel.increased-memory-limit`. Si firmas el IPA de Actions por separado, incluye el entitlement en la firma con un perfil que lo admita.
 
+La tarjeta **Memoria** muestra si el permiso aparece en la firma instalada y cuánto puede asignar CrucibleLLM en ese momento. Si la firma no se puede inspeccionar, muestra **Firma no verificable**. La cifra disponible corresponde al presupuesto del proceso. La RAM física se muestra aparte.
+
+El catálogo **Modelos para OpenCode** incluye Qwen 3.5 4B y 9B de Bartowski, Unsloth y LM Studio Community. Al cargar un GGUF, la tarjeta del modelo indica si esta build habilita herramientas. El script de sincronización muestra en OpenCode el nombre del GGUF cargado y su contexto efectivo.
+
 ## Building from Source
 
 The app builds on GitHub Actions using a macOS runner with Xcode:

@@ -190,6 +190,7 @@ final class HTTPServer {
             let models: [[String: Any]]
             if let size = self.llamaState?.activeContextTokens {
                 models = [["id": "local", "object": "model", "created": 0, "owned_by": "local",
+                           "display_name": self.llamaState?.loadedModel ?? "Modelo cargado en el iPad",
                            "context_length": size, "supports_tools": self.llamaState?.supportsTools == true]]
             } else {
                 models = []
@@ -270,6 +271,9 @@ final class HTTPServer {
             ]
             var started = false
             var result = ""
+            var pendingText = ""
+            var lastTextSend: UInt64?
+            var textChunks = 0
             var output = ToolOutput(parseTools: toolChat != nil)
             func sendChunk(_ delta: [String: Any], finish: String? = nil) async throws {
                 if !started {
@@ -283,18 +287,30 @@ final class HTTPServer {
                 try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
             }
             do {
-                func emit(_ text: String) async throws {
-                    guard !text.isEmpty else { return }
-                    if stream {
-                        try await sendChunk(["content": text])
-                    } else {
+                func emit(_ text: String, final: Bool = false) async throws {
+                    guard stream else {
                         result += text
+                        return
                     }
+                    pendingText += text
+                    guard !pendingText.isEmpty else { return }
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    let shouldFlush: Bool
+                    if let lastTextSend {
+                        shouldFlush = pendingText.utf8.count >= 64 || now - lastTextSend >= 45_000_000
+                    } else {
+                        shouldFlush = !pendingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    }
+                    guard final || shouldFlush else { return }
+                    try await sendChunk(["content": pendingText])
+                    pendingText = ""
+                    lastTextSend = now
+                    textChunks += 1
                 }
                 let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true, toolPrompt: toolPrompt) { piece in
                     try await emit(output.append(piece))
                 }
-                try await emit(output.append("", final: true))
+                try await emit(output.append("", final: true), final: true)
                 let calls = try toolChat?.calls(output.blocks) ?? []
                 let finish = calls.isEmpty ? usage.finishReason : "tool_calls"
                 let counts = ["prompt_tokens": usage.prompt, "completion_tokens": usage.output, "total_tokens": usage.prompt + usage.output]
@@ -308,6 +324,7 @@ final class HTTPServer {
                         try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
                     }
                     try await self.send("data: [DONE]\n\n", to: connection)
+                    DiagnosticLog.shared.write("Streaming: \(textChunks) bloques de texto para \(usage.output) tokens generados.", source: "API")
                     connection.cancel()
                 } else {
                     var message: [String: Any] = ["role": "assistant", "content": result.trimmingCharacters(in: .whitespacesAndNewlines)]
@@ -336,6 +353,8 @@ final class HTTPServer {
                     (status, message) = ("400 Bad Request", "Prompt exceeds the \(size)-token context. Start a shorter session or load a larger context.")
                 case LlamaError.invalidPrompt:
                     (status, message) = ("400 Bad Request", "Prompt is empty.")
+                case LlamaError.decodeFailed:
+                    (status, message) = ("500 Internal Server Error", "llama.cpp could not evaluate this model. Check Diagnostics on the iPad.")
                 case let error as ToolChatError:
                     (status, message) = ("422 Unprocessable Content", error.localizedDescription)
                 default:

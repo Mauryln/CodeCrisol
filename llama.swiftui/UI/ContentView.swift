@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 struct ContentView: View {
     @ObservedObject var state: LlamaState
@@ -13,6 +14,7 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                memoryCard
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 16) {
                         modelCard.frame(minWidth: 300)
@@ -64,6 +66,12 @@ struct ContentView: View {
             Text(state.loadStatus)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            if state.hasModel {
+                Label(state.supportsTools ? "Herramientas disponibles · ipad-code" : "Chat de texto · ipad-chat",
+                      systemImage: state.supportsTools ? "hammer" : "text.bubble")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if state.loadingModel != nil {
                 TimelineView(.periodic(from: .now, by: 0.2)) { _ in
                     if state.loadProgress > 0 && state.loadProgress < 1 {
@@ -113,6 +121,25 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                 }
+            }
+        }
+        .panel()
+    }
+
+    private var memoryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Memoria", systemImage: "memorychip")
+                .font(.headline)
+                .foregroundStyle(accent)
+            Text("Increased Memory Limit · \(IncreasedMemoryStatus.current.rawValue)")
+                .font(.subheadline)
+            TimelineView(.periodic(from: .now, by: 2)) { _ in
+                let available = Double(os_proc_available_memory()) / 1_073_741_824
+                let physical = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+                Text("\(available.formatted(.number.precision(.fractionLength(2)))) GiB disponibles para CrucibleLLM · \(physical.formatted(.number.precision(.fractionLength(1)))) GiB de RAM física")
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
         }
         .panel()
@@ -221,7 +248,7 @@ struct ContentView: View {
                 }
             }
             if !state.undownloadedModels.isEmpty {
-                Text("Disponibles para descargar").font(.headline)
+                Text("Modelos para OpenCode").font(.headline)
                 ForEach(state.undownloadedModels) { model in
                     DownloadButton(state: state, model: model, downloaded: false)
                 }

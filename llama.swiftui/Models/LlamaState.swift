@@ -66,11 +66,11 @@ struct CompletionUsage {
 }
 
 struct Model: Identifiable {
-    var id = UUID()
+    var id: String { filename }
     var name: String
     var url: String
     var filename: String
-    var status: String?
+    var source: String?
 }
 
 struct DownloadProgress {
@@ -199,6 +199,7 @@ class LlamaState: ObservableObject {
     private var waitingRequests = 0
     var hasModel: Bool { llamaContext != nil }
     var supportsTools: Bool { llamaContext?.supportsTools == true }
+    func isLoaded(_ model: Model) -> Bool { loadedModelFile?.filename == model.filename }
     var loadProgress: Float { loadControl?.progress ?? 0 }
     var isGenerating: Bool { generationControl != nil }
     var hasPendingModelSettings: Bool {
@@ -209,7 +210,7 @@ class LlamaState: ObservableObject {
         let saved = UserDefaults.standard.integer(forKey: Self.contextPreference)
         requestedContextTokens = Self.contextOptions.contains(saved) ? saved : Self.contextOptions[0]
         refreshModels()
-        DiagnosticLog.shared.write("CrucibleLLM iniciado.")
+        DiagnosticLog.shared.write("CrucibleLLM iniciado. Increased Memory Limit: \(IncreasedMemoryStatus.current.rawValue).")
     }
 
     func refreshModels() {
@@ -222,7 +223,7 @@ class LlamaState: ObservableObject {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }.map { file in
                 defaultModels.first { $0.filename == file.lastPathComponent }
-                    ?? Model(name: file.deletingPathExtension().lastPathComponent, url: "", filename: file.lastPathComponent, status: nil)
+                    ?? Model(name: file.deletingPathExtension().lastPathComponent, url: "", filename: file.lastPathComponent, source: nil)
             }
             let local = Set(downloadedModels.map(\.filename))
             undownloadedModels = defaultModels.filter { !local.contains($0.filename) }
@@ -242,56 +243,27 @@ class LlamaState: ObservableObject {
     }
     private let defaultModels: [Model] = [
         Model(
-            name: "Qwen3-8B (Q4_K_M, 5.03 GB)",
-            url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true",
-            filename: "Qwen3-8B-Q4_K_M.gguf", status: "download"
+            name: "Qwen 3.5 4B · Q4_K_M",
+            url: "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+            filename: "qwen3.5-4b-Q4_K_M.gguf", source: "Bartowski · Referencia de velocidad"
         ),
         Model(
-            name: "Gemma-3-4B-IT (Q4_K_M, 2.9 GiB)",
-            url: "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf?download=true",
-            filename: "gemma-3-4b-it-Q4_K_M.gguf", status: "download"
+            name: "Qwen 3.5 9B · Q4_K_M",
+            url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+            filename: "Qwen3.5-9B-Q4_K_M.gguf", source: "Unsloth · 5,68 GB"
         ),
         Model(
-            name: "Qwen-3.5-4B (Q4_K_M, 2.7 GiB)",
-            url: "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf?download=true",
-            filename: "qwen3.5-4b-Q4_K_M.gguf", status: "download"
-        ),
-        Model(name: "TinyLlama-1.1B (Q4_0, 0.6 GiB)",url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-1T-OpenOrca-GGUF/resolve/main/tinyllama-1.1b-1t-openorca.Q4_0.gguf?download=true",filename: "tinyllama-1.1b-1t-openorca.Q4_0.gguf", status: "download"),
-        Model(
-            name: "TinyLlama-1.1B Chat (Q8_0, 1.1 GiB)",
-            url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q8_0.gguf?download=true",
-            filename: "tinyllama-1.1b-chat-v1.0.Q8_0.gguf", status: "download"
-        ),
-
-        Model(
-            name: "TinyLlama-1.1B (F16, 2.2 GiB)",
-            url: "https://huggingface.co/ggml-org/models/resolve/main/tinyllama-1.1b/ggml-model-f16.gguf?download=true",
-            filename: "tinyllama-1.1b-f16.gguf", status: "download"
-        ),
-
-        Model(
-            name: "Phi-2.7B (Q4_0, 1.6 GiB)",
-            url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q4_0.gguf?download=true",
-            filename: "phi-2-q4_0.gguf", status: "download"
-        ),
-
-        Model(
-            name: "Phi-2.7B (Q8_0, 2.8 GiB)",
-            url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q8_0.gguf?download=true",
-            filename: "phi-2-q8_0.gguf", status: "download"
-        ),
-
-        Model(
-            name: "Mistral-7B-v0.1 (Q4_0, 3.8 GiB)",
-            url: "https://huggingface.co/TheBloke/Mistral-7B-v0.1-GGUF/resolve/main/mistral-7b-v0.1.Q4_0.gguf?download=true",
-            filename: "mistral-7b-v0.1.Q4_0.gguf", status: "download"
+            name: "Qwen 3.5 9B · Q3_K_M",
+            url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q3_K_M.gguf",
+            filename: "Qwen3.5-9B-Q3_K_M.gguf", source: "Unsloth · 4,67 GB"
         ),
         Model(
-            name: "OpenHermes-2.5-Mistral-7B (Q3_K_M, 3.52 GiB)",
-            url: "https://huggingface.co/TheBloke/OpenHermes-2.5-Mistral-7B-GGUF/resolve/main/openhermes-2.5-mistral-7b.Q3_K_M.gguf?download=true",
-            filename: "openhermes-2.5-mistral-7b.Q3_K_M.gguf", status: "download"
+            name: "Qwen 3.5 9B · Q4_K_M",
+            url: "https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+            filename: "LM-Studio-Qwen3.5-9B-Q4_K_M.gguf", source: "LM Studio Community · 5,63 GB"
         )
     ]
+
     func loadModel(_ model: Model) {
         guard !busy, loadingModel == nil else { return }
         stopServer()
@@ -358,7 +330,7 @@ class LlamaState: ObservableObject {
     }
 
     func removeModel(_ model: Model) {
-        guard loadingModel == nil, loadedModel != model.name else { return }
+        guard loadingModel == nil, !isLoaded(model) else { return }
         do {
             try FileManager.default.removeItem(at: getDocumentsDirectory().appendingPathComponent(model.filename))
             refreshModels()

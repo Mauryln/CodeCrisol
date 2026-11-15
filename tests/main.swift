@@ -57,3 +57,28 @@ let summary = try ToolChat(["messages": history, "tool_choice": "none"])!
 let summaryPrompt = try summary.prompt(history)
 precondition(summaryPrompt.contains("File saved.") && !summaryPrompt.contains("<tools>"))
 print("Tool streaming, schemas and tool conversation history passed.")
+
+func word(_ value: UInt32, big: Bool = false) -> Data {
+    var ordered = big ? value.bigEndian : value.littleEndian
+    return withUnsafeBytes(of: &ordered) { Data($0) }
+}
+
+func signedFixture(entitlement: [String: Any], slot: UInt32 = 5) throws -> Data {
+    let plist = try PropertyListSerialization.data(fromPropertyList: entitlement, format: .xml, options: 0)
+    let blob = word(0xfade7171, big: true) + word(UInt32(8 + plist.count), big: true) + plist
+    let signature = word(0xfade0cc0, big: true) + word(UInt32(20 + blob.count), big: true)
+        + word(1, big: true) + word(slot, big: true) + word(20, big: true) + blob
+    let header = word(0xfeedfacf) + Data(repeating: 0, count: 12)
+        + word(1) + word(16) + Data(repeating: 0, count: 8)
+    return header + word(0x1d) + word(16) + word(48) + word(UInt32(signature.count)) + signature
+}
+
+let memoryKey = "com.apple.developer.kernel.increased-memory-limit"
+let enabled = try signedFixture(entitlement: [memoryKey: true])
+let off = try signedFixture(entitlement: [memoryKey: false])
+let der = try signedFixture(entitlement: [:], slot: 7)
+precondition(IncreasedMemoryStatus.read(enabled) == .enabled)
+precondition(IncreasedMemoryStatus.read(off) == .disabled)
+precondition(IncreasedMemoryStatus.read(der) == .unknown)
+precondition(IncreasedMemoryStatus.read(Data(enabled.dropLast())) == .unknown)
+print("Increased Memory Limit signature diagnostics passed.")

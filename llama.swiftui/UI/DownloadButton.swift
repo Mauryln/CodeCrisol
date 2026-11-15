@@ -8,11 +8,16 @@ struct DownloadButton: View {
 
     var body: some View {
         HStack {
-            Label(model.name, systemImage: downloaded ? "doc.fill" : "arrow.down.circle")
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Label(model.name, systemImage: downloaded ? "doc.fill" : "arrow.down.circle")
+                    .font(.subheadline)
+                if let source = model.source {
+                    Text(source).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if downloaded {
-                if state.loadedModel == model.name {
+                if state.isLoaded(model) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.tint)
                         .accessibilityLabel("Cargado")

@@ -30,10 +30,10 @@ jobs:
           unzip -q llama-xcframework.zip -d llama.cpp
           test -f llama.cpp/build-apple/llama.xcframework/Info.plist
 
-      - name: Test tool call streaming and history
+      - name: Test tool calls and memory diagnostics
         run: |
-          swiftc llama.swiftui/ToolChat.swift tests/main.swift -o "$RUNNER_TEMP/tool-chat-tests"
-          "$RUNNER_TEMP/tool-chat-tests"
+          swiftc llama.swiftui/ToolChat.swift llama.swiftui/MemoryDiagnostics.swift tests/main.swift -o "$RUNNER_TEMP/crucible-tests"
+          "$RUNNER_TEMP/crucible-tests"
 
       - name: Build iOS app
         run: |

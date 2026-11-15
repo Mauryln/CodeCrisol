@@ -69,6 +69,7 @@ if ($supportsTools) {
     $provider['body']['tool_choice'] = 'none'
 }
 $modelConfig['capabilities']['tools'] = $supportsTools
+$modelConfig['name'] = if ($model.display_name) { [string]$model.display_name } else { 'Modelo cargado en el iPad' }
 $modelConfig['capabilities']['input'] = @('text')
 $modelConfig['capabilities']['output'] = @('text')
 $modelConfig['limit']['context'] = $context
