@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function ConvertTo-ConfigMap($Value) {
-    if ($Value -is [pscustomobject]) {
+    if ($null -ne $Value -and $Value.GetType().FullName -eq 'System.Management.Automation.PSCustomObject') {
         $map = [ordered]@{}
         foreach ($property in $Value.PSObject.Properties) {
             $map[$property.Name] = ConvertTo-ConfigMap $property.Value
@@ -20,7 +20,7 @@ function ConvertTo-ConfigMap($Value) {
         return $map
     }
     if ($Value -is [array]) {
-        return ,@($Value | ForEach-Object { ConvertTo-ConfigMap $_ })
+        return ,@(foreach ($item in $Value) { ConvertTo-ConfigMap $item })
     }
     return $Value
 }
@@ -69,6 +69,8 @@ if ($supportsTools) {
     $provider['body']['tool_choice'] = 'none'
 }
 $modelConfig['capabilities']['tools'] = $supportsTools
+$modelConfig['capabilities']['input'] = @('text')
+$modelConfig['capabilities']['output'] = @('text')
 $modelConfig['limit']['context'] = $context
 $modelConfig['limit']['output'] = $output
 $config['agents']['ipad-code'] = $example['agents']['ipad-code']
