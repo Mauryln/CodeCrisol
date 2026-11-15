@@ -53,4 +53,7 @@ do {
 
 let disabled = try ToolChat(["tools": request["tools"]!, "tool_choice": "none"])
 precondition(disabled == nil)
+let summary = try ToolChat(["messages": history, "tool_choice": "none"])!
+let summaryPrompt = try summary.prompt(history)
+precondition(summaryPrompt.contains("File saved.") && !summaryPrompt.contains("<tools>"))
 print("Tool streaming, schemas and tool conversation history passed.")

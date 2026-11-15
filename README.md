@@ -48,10 +48,10 @@ El modelo se publica como `local` y corresponde al GGUF cargado en el iPad. El e
 
 ### Programación con archivos y comandos
 
-Carga **Qwen 3.5** en CrucibleLLM e inicia el servidor. Desde la carpeta que quieras abrir en OpenCode, ejecuta este script con PowerShell 7. Usa la ruta al repositorio y la URL que muestra el iPad.
+Carga **Qwen 3.5** en CrucibleLLM e inicia el servidor. Desde la carpeta que quieras abrir en OpenCode, ejecuta este script de PowerShell. Usa la ruta al repositorio y la URL que muestra el iPad.
 
 ```powershell
-pwsh -File C:/ruta/a/CrucibleLLM/Sync-CrucibleOpenCode.ps1 -BaseUrl http://192.168.1.62:8081/v1 -Launch
+& 'C:/ruta/a/CrucibleLLM/Sync-CrucibleOpenCode.ps1' -BaseUrl http://192.168.1.62:8081/v1 -Launch
 ```
 
 El script consulta `/v1/models`, sincroniza el contexto efectivo y abre el agente `ipad-code` cuando el modelo soporta herramientas. Vuelve a ejecutarlo al cambiar el contexto, el modelo o el puerto. Puedes omitir `-Launch` para actualizar solo la configuración.

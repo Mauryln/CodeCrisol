@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
@@ -10,6 +10,25 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function ConvertTo-ConfigMap($Value) {
+    if ($Value -is [pscustomobject]) {
+        $map = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $map[$property.Name] = ConvertTo-ConfigMap $property.Value
+        }
+        return $map
+    }
+    if ($Value -is [array]) {
+        return ,@($Value | ForEach-Object { ConvertTo-ConfigMap $_ })
+    }
+    return $Value
+}
+
+function Read-ConfigMap([string]$Path) {
+    ConvertTo-ConfigMap (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+
 $endpoint = $BaseUrl.AbsoluteUri.TrimEnd('/')
 if ($BaseUrl.Scheme -notin @('http', 'https') -or $BaseUrl.AbsolutePath.TrimEnd('/') -ne '/v1') {
     throw 'Usa la URL completa que muestra CrucibleLLM, terminada en /v1.'
@@ -21,9 +40,9 @@ if (!$model -or [int]$model.context_length -lt 1) {
     throw 'El iPad no anuncia un modelo cargado con contexto disponible.'
 }
 
-$example = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'opencode.example.jsonc') -Raw | ConvertFrom-Json -AsHashtable
+$example = Read-ConfigMap (Join-Path $PSScriptRoot 'opencode.example.jsonc')
 $config = if (Test-Path -LiteralPath $ConfigPath) {
-    Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -AsHashtable
+    Read-ConfigMap $ConfigPath
 } else {
     @{ '$schema' = 'https://opencode.ai/config.json' }
 }
@@ -59,14 +78,17 @@ $absolute = [IO.Path]::GetFullPath($ConfigPath)
 $folder = [IO.Path]::GetDirectoryName($absolute)
 [IO.Directory]::CreateDirectory($folder) | Out-Null
 $temporary = Join-Path $folder ('.crucible-config-' + [guid]::NewGuid().ToString('N') + '.tmp')
+$backup = "$temporary.bak"
 try {
     [IO.File]::WriteAllText($temporary, ($config | ConvertTo-Json -Depth 100) + [Environment]::NewLine)
-    [IO.File]::Move($temporary, $absolute, $true)
+    if ([IO.File]::Exists($absolute)) { [IO.File]::Replace($temporary, $absolute, $backup) }
+    else { [IO.File]::Move($temporary, $absolute) }
 } finally {
     if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
 }
 
-Write-Host "ipad/local · $endpoint · contexto $context · salida $output · herramientas $supportsTools"
+Write-Host "ipad/local | $endpoint | contexto $context | salida $output | herramientas $supportsTools"
 if ($Launch) {
     $agent = if ($supportsTools) { 'ipad-code' } else { 'ipad-chat' }
     & opencode mini --standalone --agent $agent --model ipad/local

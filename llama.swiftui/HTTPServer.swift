@@ -211,28 +211,36 @@ final class HTTPServer {
         let toolPrompt: String?
         let chat: [ChatMessage]
         do {
+            let normalized = try messages.map { message in
+                var message = message
+                let role = message["role"] as? String == "developer" ? "system" : message["role"] as? String ?? ""
+                var content = try ToolChat.content(message)
+                // OpenCode appends the hint regardless of whether the client advertises execute.
+                if textOnlyOpenCode, role == "system",
+                   let hint = content.range(of: "\n" + worktreeHint, options: .backwards),
+                   content[hint.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    content.removeSubrange(hint.lowerBound...)
+                }
+                message["role"] = role
+                message["content"] = content
+                return message
+            }
             toolChat = try ToolChat(json)
             if let toolChat {
                 guard self.llamaState?.supportsTools == true else {
                     throw ToolChatError.request("Load a model with tool support, such as Qwen 3.5.")
                 }
-                toolPrompt = try toolChat.prompt(messages)
+                toolPrompt = try toolChat.prompt(normalized)
                 chat = []
             } else {
                 toolPrompt = nil
-                chat = try messages.map { msg in
-                    let role = msg["role"] as? String == "developer" ? "system" : msg["role"] as? String ?? ""
-                    guard ["system", "user", "assistant"].contains(role), msg["tool_calls"] == nil else {
+                chat = try normalized.map { msg in
+                    let role = msg["role"] as? String ?? ""
+                    guard ["system", "user", "assistant"].contains(role),
+                          (msg["tool_calls"] as? [[String: Any]] ?? []).isEmpty else {
                         throw ToolChatError.request("Unexpected role or tool calls in text chat.")
                     }
-                    var content = try ToolChat.content(msg)
-                    // OpenCode appends this hint even when its execute tool is disabled.
-                    if textOnlyOpenCode, role == "system",
-                       let hint = content.range(of: "\n" + worktreeHint, options: .backwards),
-                       content[hint.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        content.removeSubrange(hint.lowerBound...)
-                    }
-                    return ChatMessage(role: role, content: content)
+                    return ChatMessage(role: role, content: msg["content"] as? String ?? "")
                 }
             }
         } catch {

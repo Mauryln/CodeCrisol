@@ -32,9 +32,24 @@ struct ToolChat {
 
     init?(_ request: [String: Any]) throws {
         let choice = request["tool_choice"]
-        if choice as? String == "none" { return nil }
+        let hasHistory = (request["messages"] as? [[String: Any]] ?? []).contains {
+            $0["role"] as? String == "tool" || !($0["tool_calls"] as? [[String: Any]] ?? []).isEmpty
+        }
+        if choice as? String == "none" {
+            if !hasHistory { return nil }
+            definitions = [:]
+            required = false
+            parallel = true
+            return
+        }
         let tools = request["tools"] as? [[String: Any]] ?? []
-        if tools.isEmpty, choice == nil || choice as? String == "auto" { return nil }
+        if tools.isEmpty, choice == nil || choice as? String == "auto" {
+            if !hasHistory { return nil }
+            definitions = [:]
+            required = false
+            parallel = true
+            return
+        }
         var name: String?
         if let selection = choice as? [String: Any],
            selection["type"] as? String == "function",
@@ -90,7 +105,7 @@ struct ToolChat {
         </function>
         </tool_call>
         """
-        var systems = [instructions]
+        var systems = [definitions.isEmpty ? "Use the existing tool results to answer. No new tools are available on this turn." : instructions]
         if required { systems.append("You must call a tool on this turn.") }
         if !parallel { systems.append("Call at most one tool per turn.") }
         var turns = ""
