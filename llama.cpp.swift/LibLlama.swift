@@ -73,6 +73,7 @@ actor LlamaContext {
     private var temporary_invalid_cchars: [CChar]
 
     nonisolated let contextTokens: Int
+    nonisolated let supportsTools: Bool
     private var n_len: Int32 { Int32(contextTokens) }
     var n_cur: Int32 = 0
 
@@ -82,6 +83,9 @@ actor LlamaContext {
         self.model = model
         self.context = context
         self.contextTokens = Int(llama_n_ctx_seq(context))
+        var architecture = [CChar](repeating: 0, count: 64)
+        let length = llama_model_meta_val_str(model, "general.architecture", &architecture, 64)
+        self.supportsTools = length > 0 && ["qwen35", "qwen35moe"].contains(String(cString: architecture))
         self.tokens_list = []
         self.batch = llama_batch_init(512, 0, 1)
         self.temporary_invalid_cchars = []
@@ -222,11 +226,11 @@ actor LlamaContext {
             + "<|im_start|>assistant\n"
     }
 
-    func completion_init(_ messages: [ChatMessage], control: ModelLoadControl) throws {
+    func completion_init(_ messages: [ChatMessage], toolPrompt: String?, control: ModelLoadControl) throws {
         clear()
         llama_sampler_reset(sampling)
         is_done = false
-        tokens_list = tokenize(text: chatPrompt(messages), add_bos: true, parseSpecial: true)
+        tokens_list = tokenize(text: toolPrompt ?? chatPrompt(messages), add_bos: true, parseSpecial: true)
         guard !tokens_list.isEmpty else { throw LlamaError.invalidPrompt }
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
         for start in stride(from: 0, to: tokens_list.count, by: 512) {

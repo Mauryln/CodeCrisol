@@ -44,7 +44,19 @@ Use `http://YOUR_IPAD_IP:8080/v1` as the base URL. The API supports text chat, `
 4. En el proyecto que abrirás con OpenCode 2.x, copia [opencode.example.jsonc](opencode.example.jsonc) a `opencode.jsonc` o integra el proveedor `ipad` y el agente `ipad-chat` en tu configuración existente. Sustituye la IP de ejemplo por la del iPad.
 5. Prueba con `opencode run --agent ipad-chat --model ipad/local "Responde solo con OK."`
 
-El modelo se publica como `local` y corresponde al GGUF cargado en el iPad. OpenCode puede usarlo para conversación de texto. Las acciones que requieren llamadas a herramientas, como editar archivos o ejecutar comandos, requieren soporte adicional del servidor.
+El modelo se publica como `local` y corresponde al GGUF cargado en el iPad. El ejemplo manual configura el chat de texto. Para activar las herramientas con un modelo compatible, usa el script de sincronización.
+
+### Programación con archivos y comandos
+
+Carga **Qwen 3.5** en CrucibleLLM e inicia el servidor. Desde la carpeta que quieras abrir en OpenCode, ejecuta este script con PowerShell 7. Usa la ruta al repositorio y la URL que muestra el iPad.
+
+```powershell
+pwsh -File C:/ruta/a/CrucibleLLM/Sync-CrucibleOpenCode.ps1 -BaseUrl http://192.168.1.62:8081/v1 -Launch
+```
+
+El script consulta `/v1/models`, sincroniza el contexto efectivo y abre el agente `ipad-code` cuando el modelo soporta herramientas. Vuelve a ejecutarlo al cambiar el contexto, el modelo o el puerto. Puedes omitir `-Launch` para actualizar solo la configuración.
+
+El iPad genera las llamadas y OpenCode las ejecuta en Windows. El agente puede leer y buscar en el proyecto, escribir o editar archivos y ejecutar comandos para trabajar con archivos y directorios. OpenCode aplica sus permisos de edición y shell y devuelve el resultado al modelo.
 
 El contexto de 4.096 tokens incluye instrucciones de OpenCode, historial y respuesta. Si pruebas con un prompt largo, empieza una sesión nueva para liberar contexto. El servidor acepta una generación a la vez y devuelve HTTP 429 si está ocupado.
 

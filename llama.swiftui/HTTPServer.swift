@@ -190,7 +190,7 @@ final class HTTPServer {
             let models: [[String: Any]]
             if let size = self.llamaState?.activeContextTokens {
                 models = [["id": "local", "object": "model", "created": 0, "owned_by": "local",
-                           "context_length": size]]
+                           "context_length": size, "supports_tools": self.llamaState?.supportsTools == true]]
             } else {
                 models = []
             }
@@ -201,37 +201,46 @@ final class HTTPServer {
 
     private func handleChatCompletion(body: Data, connection: NWConnection) {
         guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let messages = json["messages"] as? [[String: Any]], !messages.isEmpty,
-              messages.allSatisfy({ message in
-                  guard let role = message["role"] as? String else { return false }
-                  return ["system", "developer", "user", "assistant"].contains(role)
-                      && message["content"] is String && message["tool_calls"] == nil
-              }) else {
+              let messages = json["messages"] as? [[String: Any]], !messages.isEmpty else {
             sendError(connection, status: "400 Bad Request", message: "Expected text chat messages.")
             return
         }
-        let toolChoice = json["tool_choice"] as? String
-        // OpenCode may send optional tool declarations even for text-only models.
-        guard json["tool_choice"] == nil || toolChoice == "auto" || toolChoice == "none" else {
-            sendError(connection, status: "400 Bad Request", message: "This server cannot execute required tool calls.")
+        let textOnlyOpenCode = json["crucible_opencode_text"] as? Bool == true
+        let worktreeHint = "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using \u{0060}execute\u{0060} to call \u{0060}tools.opencode.session_move\u{0060} and make the worktree the session's working directory."
+        let toolChat: ToolChat?
+        let toolPrompt: String?
+        let chat: [ChatMessage]
+        do {
+            toolChat = try ToolChat(json)
+            if let toolChat {
+                guard self.llamaState?.supportsTools == true else {
+                    throw ToolChatError.request("Load a model with tool support, such as Qwen 3.5.")
+                }
+                toolPrompt = try toolChat.prompt(messages)
+                chat = []
+            } else {
+                toolPrompt = nil
+                chat = try messages.map { msg in
+                    let role = msg["role"] as? String == "developer" ? "system" : msg["role"] as? String ?? ""
+                    guard ["system", "user", "assistant"].contains(role), msg["tool_calls"] == nil else {
+                        throw ToolChatError.request("Unexpected role or tool calls in text chat.")
+                    }
+                    var content = try ToolChat.content(msg)
+                    // OpenCode appends this hint even when its execute tool is disabled.
+                    if textOnlyOpenCode, role == "system",
+                       let hint = content.range(of: "\n" + worktreeHint, options: .backwards),
+                       content[hint.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        content.removeSubrange(hint.lowerBound...)
+                    }
+                    return ChatMessage(role: role, content: content)
+                }
+            }
+        } catch {
+            sendError(connection, status: "400 Bad Request", message: error.localizedDescription)
             return
         }
 
-        let textOnlyOpenCode = json["crucible_opencode_text"] as? Bool == true
-        let worktreeHint = "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using \u{0060}execute\u{0060} to call \u{0060}tools.opencode.session_move\u{0060} and make the worktree the session's working directory."
-        let chat = messages.map { msg in
-            let role = msg["role"] as? String == "developer" ? "system" : msg["role"] as? String ?? "user"
-            var content = msg["content"] as? String ?? ""
-            // OpenCode 2.3 appends this hint even when its execute tool is disabled.
-            if textOnlyOpenCode, role == "system",
-               let hint = content.range(of: "\n" + worktreeHint, options: .backwards),
-               content[hint.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                content.removeSubrange(hint.lowerBound...)
-            }
-            return ChatMessage(role: role, content: content)
-        }
-
-        let maxTokens = json["max_completion_tokens"] as? Int ?? json["max_tokens"] as? Int ?? 500
+        let maxTokens = json["max_completion_tokens"] as? Int ?? json["max_tokens"] as? Int ?? (toolChat == nil ? 500 : 4096)
         guard maxTokens > 0 else {
             sendError(connection, status: "400 Bad Request", message: "max_tokens must be positive.")
             return
@@ -253,6 +262,7 @@ final class HTTPServer {
             ]
             var started = false
             var result = ""
+            var output = ToolOutput(parseTools: toolChat != nil)
             func sendChunk(_ delta: [String: Any], finish: String? = nil) async throws {
                 if !started {
                     started = true
@@ -265,16 +275,26 @@ final class HTTPServer {
                 try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
             }
             do {
-                let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true) { piece in
+                func emit(_ text: String) async throws {
+                    guard !text.isEmpty else { return }
                     if stream {
-                        try await sendChunk(["content": piece])
+                        try await sendChunk(["content": text])
                     } else {
-                        result += piece
+                        result += text
                     }
                 }
+                let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true, toolPrompt: toolPrompt) { piece in
+                    try await emit(output.append(piece))
+                }
+                try await emit(output.append("", final: true))
+                let calls = try toolChat?.calls(output.blocks) ?? []
+                let finish = calls.isEmpty ? usage.finishReason : "tool_calls"
                 let counts = ["prompt_tokens": usage.prompt, "completion_tokens": usage.output, "total_tokens": usage.prompt + usage.output]
                 if stream {
-                    try await sendChunk([:], finish: usage.finishReason)
+                    if !calls.isEmpty {
+                        try await sendChunk(["tool_calls": calls.enumerated().map { $0.element.json(index: $0.offset) }])
+                    }
+                    try await sendChunk([:], finish: finish)
                     if includeUsage {
                         let chunk = metadata.merging(["choices": [], "usage": counts]) { _, new in new }
                         try await self.send("data: \(self.encode(chunk))\n\n", to: connection)
@@ -282,19 +302,13 @@ final class HTTPServer {
                     try await self.send("data: [DONE]\n\n", to: connection)
                     connection.cancel()
                 } else {
-                    if let start = result.range(of: "<think>") {
-                        if let end = result.range(of: "</think>", range: start.upperBound..<result.endIndex) {
-                            result = String(result[end.upperBound...])
-                        } else {
-                            result = String(result[..<start.lowerBound])
-                        }
+                    var message: [String: Any] = ["role": "assistant", "content": result.trimmingCharacters(in: .whitespacesAndNewlines)]
+                    if !calls.isEmpty {
+                        if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { message["content"] = NSNull() }
+                        message["tool_calls"] = calls.map { $0.json() }
                     }
-                    if let end = result.range(of: "<|im_end|>") {
-                        result = String(result[..<end.lowerBound])
-                    }
-                    result = result.trimmingCharacters(in: .whitespacesAndNewlines)
                     let response = metadata.merging([
-                        "choices": [["index": 0, "message": ["role": "assistant", "content": result], "finish_reason": usage.finishReason]],
+                        "choices": [["index": 0, "message": message, "finish_reason": finish]],
                         "usage": counts
                     ]) { _, new in new }
                     self.sendResponse(connection: connection, status: "200 OK", body: self.encode(response), contentType: "application/json")
@@ -314,6 +328,8 @@ final class HTTPServer {
                     (status, message) = ("400 Bad Request", "Prompt exceeds the \(size)-token context. Start a shorter session or load a larger context.")
                 case LlamaError.invalidPrompt:
                     (status, message) = ("400 Bad Request", "Prompt is empty.")
+                case let error as ToolChatError:
+                    (status, message) = ("422 Unprocessable Content", error.localizedDescription)
                 default:
                     (status, message) = ("500 Internal Server Error", "Generation failed.")
                 }

@@ -2,6 +2,21 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "ipad/local",
   "agents": {
+    "ipad-code": {
+      "description": "Programación con herramientas de OpenCode y el modelo del iPad",
+      "mode": "primary",
+      "model": "ipad/local",
+      "system": "Ayuda con el proyecto actual. Usa las herramientas disponibles para actuar y comprueba sus resultados antes de afirmar que un cambio se realizó.",
+      "permissions": [
+        { "action": "*", "resource": "*", "effect": "deny" },
+        { "action": "read", "resource": "*", "effect": "allow" },
+        { "action": "glob", "resource": "*", "effect": "allow" },
+        { "action": "grep", "resource": "*", "effect": "allow" },
+        { "action": "external_directory", "resource": "*", "effect": "ask" },
+        { "action": "edit", "resource": "*", "effect": "ask" },
+        { "action": "shell", "resource": "*", "effect": "ask" }
+      ]
+    },
     "ipad-chat": {
       "description": "Conversación de texto con el modelo del iPad",
       "mode": "primary",

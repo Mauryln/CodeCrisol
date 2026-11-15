@@ -198,6 +198,7 @@ class LlamaState: ObservableObject {
     private var generationControl: ModelLoadControl?
     private var waitingRequests = 0
     var hasModel: Bool { llamaContext != nil }
+    var supportsTools: Bool { llamaContext?.supportsTools == true }
     var loadProgress: Float { loadControl?.progress ?? 0 }
     var isGenerating: Bool { generationControl != nil }
     var hasPendingModelSettings: Bool {
@@ -620,6 +621,7 @@ class LlamaState: ObservableObject {
 
     func generate(_ messages: [ChatMessage], maxTokens: Int,
                   fromServer: Bool = false,
+                  toolPrompt: String? = nil,
                   onText: (String) async throws -> Void) async throws -> CompletionUsage {
         if fromServer, busy {
             guard waitingRequests < 2 else { throw CompletionError.busy }
@@ -643,7 +645,7 @@ class LlamaState: ObservableObject {
 
         do {
             let started = DispatchTime.now().uptimeNanoseconds
-            try await llamaContext.completion_init(messages, control: control)
+            try await llamaContext.completion_init(messages, toolPrompt: toolPrompt, control: control)
             let prefillEnd = DispatchTime.now().uptimeNanoseconds
             let prompt = Int(await llamaContext.n_cur)
             let available = llamaContext.contextTokens - prompt

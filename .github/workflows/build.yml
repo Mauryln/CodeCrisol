@@ -30,6 +30,11 @@ jobs:
           unzip -q llama-xcframework.zip -d llama.cpp
           test -f llama.cpp/build-apple/llama.xcframework/Info.plist
 
+      - name: Test tool call streaming and history
+        run: |
+          swiftc llama.swiftui/ToolChat.swift tests/main.swift -o "$RUNNER_TEMP/tool-chat-tests"
+          "$RUNNER_TEMP/tool-chat-tests"
+
       - name: Build iOS app
         run: |
           xcodebuild build \
