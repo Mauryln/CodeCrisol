@@ -15,23 +15,28 @@ final class HTTPServer {
         let current = try NWListener(using: .tcp, on: port)
         listener = current
         current.newConnectionHandler = { [weak self, weak current] connection in
-            guard let self, let current, self.listener === current else {
-                connection.cancel()
-                return
+            MainActor.assumeIsolated {
+                guard let self, let current, self.listener === current else {
+                    connection.cancel()
+                    return
+                }
+                self.handleConnection(connection)
             }
-            self.handleConnection(connection)
         }
         current.stateUpdateHandler = { [weak self, weak current, weak llamaState] state in
-            guard let current, self?.listener === current else { return }
-            switch state {
-            case .ready:
-                if let port = current.port { llamaState?.serverReady(port: port.rawValue) }
-            case .failed(let error), .waiting(let error):
-                llamaState?.serverFailed(error)
-            default:
-                break
+            MainActor.assumeIsolated {
+                guard let current, self?.listener === current else { return }
+                switch state {
+                case .ready:
+                    if let port = current.port { llamaState?.serverReady(port: port.rawValue) }
+                case .failed(let error), .waiting(let error):
+                    llamaState?.serverFailed(error)
+                default:
+                    break
+                }
             }
         }
+        // Keep Network.framework callbacks ordered with changes to UI and listener state.
         current.start(queue: .main)
     }
 
@@ -75,8 +80,10 @@ final class HTTPServer {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed, .cancelled:
-                self?.requests.removeValue(forKey: id)?.cancel()
-                self?.connections.removeValue(forKey: id)?.cancel()
+                MainActor.assumeIsolated {
+                    self?.requests.removeValue(forKey: id)?.cancel()
+                    self?.connections.removeValue(forKey: id)?.cancel()
+                }
             default:
                 break
             }
@@ -87,45 +94,51 @@ final class HTTPServer {
 
     private func receiveRequest(_ connection: NWConnection, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, finished, error in
-            guard let self, self.connections[ObjectIdentifier(connection)] != nil, error == nil else {
-                connection.cancel()
+            MainActor.assumeIsolated {
+                guard let self, self.connections[ObjectIdentifier(connection)] != nil, error == nil else {
+                    connection.cancel()
+                    return
+                }
+                self.processReceived(data, finished: finished, buffer: buffer, connection: connection)
+            }
+        }
+    }
+
+    private func processReceived(_ data: Data?, finished: Bool, buffer: Data, connection: NWConnection) {
+        var request = buffer
+        if let data { request.append(data) }
+        if let separator = request.range(of: Data("\r\n\r\n".utf8)),
+           separator.lowerBound <= 16384,
+           let headers = String(data: request[..<separator.lowerBound], encoding: .utf8) {
+            let fields = headers.components(separatedBy: "\r\n").dropFirst().compactMap { line -> (String, String)? in
+                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { return nil }
+                return (parts[0].lowercased(), parts[1].trimmingCharacters(in: .whitespaces))
+            }
+            let lengths = fields.filter { $0.0 == "content-length" }
+            guard !fields.contains(where: { $0.0 == "transfer-encoding" }),
+                  lengths.count <= 1,
+                  let length = Int(lengths.first?.1 ?? "0"), length >= 0 else {
+                self.sendError(connection, status: "400 Bad Request", message: "Expected a valid Content-Length.")
                 return
             }
-            var request = buffer
-            if let data { request.append(data) }
-            if let separator = request.range(of: Data("\r\n\r\n".utf8)),
-               separator.lowerBound <= 16384,
-               let headers = String(data: request[..<separator.lowerBound], encoding: .utf8) {
-                let fields = headers.components(separatedBy: "\r\n").dropFirst().compactMap { line -> (String, String)? in
-                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-                    guard parts.count == 2 else { return nil }
-                    return (parts[0].lowercased(), parts[1].trimmingCharacters(in: .whitespaces))
-                }
-                let lengths = fields.filter { $0.0 == "content-length" }
-                guard !fields.contains(where: { $0.0 == "transfer-encoding" }),
-                      lengths.count <= 1,
-                      let length = Int(lengths.first?.1 ?? "0"), length >= 0 else {
-                    self.sendError(connection, status: "400 Bad Request", message: "Expected a valid Content-Length.")
-                    return
-                }
-                guard length <= 1_048_576 else {
-                    self.sendError(connection, status: "413 Content Too Large", message: "Request body exceeds 1 MiB.")
-                    return
-                }
-                let bodyEnd = separator.upperBound + length
-                if request.count >= bodyEnd {
-                    self.routeRequest(headers, body: Data(request[separator.upperBound..<bodyEnd]), connection: connection)
-                    return
-                }
-            } else if request.count > 16384 {
-                self.sendError(connection, status: "431 Request Header Fields Too Large", message: "Request headers exceed 16 KiB.")
+            guard length <= 1_048_576 else {
+                self.sendError(connection, status: "413 Content Too Large", message: "Request body exceeds 1 MiB.")
                 return
             }
-            if finished {
-                self.sendError(connection, status: "400 Bad Request", message: "Incomplete HTTP request.")
-            } else {
-                self.receiveRequest(connection, buffer: request)
+            let bodyEnd = separator.upperBound + length
+            if request.count >= bodyEnd {
+                self.routeRequest(headers, body: Data(request[separator.upperBound..<bodyEnd]), connection: connection)
+                return
             }
+        } else if request.count > 16384 {
+            self.sendError(connection, status: "431 Request Header Fields Too Large", message: "Request headers exceed 16 KiB.")
+            return
+        }
+        if finished {
+            self.sendError(connection, status: "400 Bad Request", message: "Incomplete HTTP request.")
+        } else {
+            self.receiveRequest(connection, buffer: request)
         }
     }
 
