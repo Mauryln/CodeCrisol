@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var state: LlamaState
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showLogs = false
     @State private var showChat = false
     @State private var prompt = ""
@@ -34,6 +35,9 @@ struct ContentView: View {
         .tint(accent)
         .sheet(isPresented: $showLogs) { DiagnosticsView() }
         .sheet(isPresented: $showChat) { chatPanel }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { state.refreshModels() }
+        }
     }
 
     private var header: some View {
@@ -79,7 +83,29 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .accessibilityLabel("Motor para la próxima carga")
                 .disabled(state.busy)
+                Picker("Contexto para la próxima carga", selection: $state.requestedContextTokens) {
+                    ForEach(LlamaState.contextOptions, id: \.self) { size in
+                        Text("\(size.formatted()) tokens").tag(size)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(state.busy)
+                if let context = state.activeContextTokens {
+                    Text("Contexto activo · \(context.formatted()) tokens")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                if state.requestedContextTokens >= 65536 {
+                    Text("Los contextos grandes consumen más memoria. Sube por etapas en este iPad.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 if state.hasModel {
+                    if state.hasPendingModelSettings {
+                        Button("Aplicar y recargar") { state.reloadModel() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(state.busy)
+                    }
                     HStack {
                         Button("Chat local") { showChat = true }
                         Button("Liberar modelo") { state.unloadModel() }
@@ -141,7 +167,17 @@ struct ContentView: View {
 
     private var library: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Biblioteca GGUF").font(.title2.bold())
+            HStack {
+                Text("Biblioteca GGUF").font(.title2.bold())
+                Spacer()
+                Button { state.refreshModels() } label: {
+                    Label("Actualizar", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+            }
+            Text("También puedes copiar un GGUF en Archivos → En mi iPad → CrucibleLLM.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             HStack {
                 LoadCustomButton(llamaState: state)
                 InputButton(llamaState: state)

@@ -159,10 +159,17 @@ private final class ModelDownload: NSObject, URLSessionDownloadDelegate, @unchec
 
 @MainActor
 class LlamaState: ObservableObject {
+    static let contextOptions = [4096, 8192, 16384, 32768, 65536, 131072]
+    private static let contextPreference = "requestedContextTokens"
+    private static let portPreference = "lastListeningPort"
     @Published var messageLog = ""
     @Published var downloadedModels: [Model] = []
     @Published var undownloadedModels: [Model] = []
     @Published private(set) var loadedModel: String?
+    @Published private(set) var activeContextTokens: Int?
+    @Published var requestedContextTokens: Int {
+        didSet { UserDefaults.standard.set(requestedContextTokens, forKey: Self.contextPreference) }
+    }
     @Published private(set) var loadingModel: String?
     @Published private(set) var loadStatus = "Selecciona un archivo GGUF para empezar."
     @Published private(set) var stoppingLoad = false
@@ -179,8 +186,12 @@ class LlamaState: ObservableObject {
     private let httpServer = HTTPServer()
     private var serverRetry: Task<Void, Never>?
     private var serverAttempt = 0
+    private var listeningCandidates: [NWEndpoint.Port] = []
 
     private var llamaContext: LlamaContext?
+    private var loadedModelFile: Model?
+    private var lastRequestedContext: Int?
+    private var lastRequestedMetal: Bool?
     private var loadControl: ModelLoadControl?
     private var transferTask: Task<Void, Never>?
     private var activeDownload: ModelDownload?
@@ -189,17 +200,24 @@ class LlamaState: ObservableObject {
     var hasModel: Bool { llamaContext != nil }
     var loadProgress: Float { loadControl?.progress ?? 0 }
     var isGenerating: Bool { generationControl != nil }
+    var hasPendingModelSettings: Bool {
+        hasModel && (lastRequestedContext != requestedContextTokens || lastRequestedMetal != useMetal)
+    }
 
     init() {
+        let saved = UserDefaults.standard.integer(forKey: Self.contextPreference)
+        requestedContextTokens = Self.contextOptions.contains(saved) ? saved : Self.contextOptions[0]
         refreshModels()
         DiagnosticLog.shared.write("CrucibleLLM iniciado.")
     }
 
-    private func refreshModels() {
+    func refreshModels() {
         do {
             let documentsURL = getDocumentsDirectory()
-            let modelURLs = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-            downloadedModels = modelURLs.filter { $0.pathExtension.lowercased() == "gguf" }.sorted {
+            let modelURLs = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+            downloadedModels = modelURLs.filter {
+                $0.pathExtension.lowercased() == "gguf" && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }.sorted {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }.map { file in
                 defaultModels.first { $0.filename == file.lastPathComponent }
@@ -278,9 +296,12 @@ class LlamaState: ObservableObject {
         stopServer()
         llamaContext = nil
         loadedModel = nil
+        loadedModelFile = nil
+        activeContextTokens = nil
         let url = getDocumentsDirectory().appendingPathComponent(model.filename)
         let control = ModelLoadControl()
         let metal = useMetal
+        let requestedContext = requestedContextTokens
         loadControl = control
         loadingModel = model.name
         report("Cargando \(model.name)…")
@@ -292,18 +313,26 @@ class LlamaState: ObservableObject {
             }
             do {
                 let context = try await Task.detached(priority: .userInitiated) {
-                    try LlamaContext.create_context(url: url, useMetal: metal, control: control)
+                    try LlamaContext.create_context(url: url, useMetal: metal, requestedContext: requestedContext, control: control)
                 }.value
                 if control.isCancelled { throw CancellationError() }
                 llamaContext = context
                 loadedModel = model.name
-                report("\(model.name) listo · \(metal ? "Metal" : "CPU")")
+                loadedModelFile = model
+                activeContextTokens = context.contextTokens
+                lastRequestedContext = requestedContext
+                lastRequestedMetal = metal
+                report("\(model.name) listo · \(metal ? "Metal" : "CPU") · \(context.contextTokens) tokens de contexto")
             } catch is CancellationError {
                 report("Carga cancelada.")
             } catch {
                 report("Falló la carga de \(model.name): \(error.localizedDescription)")
             }
         }
+    }
+
+    func reloadModel() {
+        if let loadedModelFile { loadModel(loadedModelFile) }
     }
 
     func cancelLoad() {
@@ -322,6 +351,8 @@ class LlamaState: ObservableObject {
         stopServer()
         llamaContext = nil
         loadedModel = nil
+        loadedModelFile = nil
+        activeContextTokens = nil
         report("Modelo descargado de la memoria.")
     }
 
@@ -344,8 +375,13 @@ class LlamaState: ObservableObject {
             return
         }
         let destination = getDocumentsDirectory().appendingPathComponent(filename)
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            report("Ya hay un archivo llamado \(filename).")
+        if FileManager.default.fileExists(atPath: destination.path) {
+            refreshModels()
+            if downloadedModels.contains(where: { $0.filename == filename }) {
+                report("\(filename) está en «En el iPad». Pulsa Cargar.")
+            } else {
+                report("Ya existe \(filename), pero no es un archivo GGUF de la biblioteca.")
+            }
             return
         }
         transfer = filename
@@ -520,13 +556,17 @@ class LlamaState: ObservableObject {
         serverError = nil
         serverStarting = true
         serverAttempt = 0
+        let stored = UserDefaults.standard.integer(forKey: Self.portPreference)
+        let primary = UInt16(exactly: stored).flatMap { $0 == 0 ? nil : NWEndpoint.Port(rawValue: $0) }
+            ?? NWEndpoint.Port(rawValue: 8080)!
+        let alternate = NWEndpoint.Port(rawValue: primary.rawValue == 8080 ? 8081 : 8080)!
+        listeningCandidates = [primary, primary, alternate, .any]
         startListener()
     }
 
     private func startListener() {
-        let preferred = NWEndpoint.Port(rawValue: 8080)!
         do {
-            try httpServer.start(llamaState: self, port: serverAttempt < 2 ? preferred : .any)
+            try httpServer.start(llamaState: self, port: listeningCandidates[serverAttempt])
         } catch {
             serverFailed(error)
         }
@@ -538,6 +578,7 @@ class LlamaState: ObservableObject {
         serverRunning = true
         UIApplication.shared.isIdleTimerDisabled = true
         serverAddress = "http://\(httpServer.getLocalIP()):\(port)/v1"
+        UserDefaults.standard.set(Int(port), forKey: Self.portPreference)
         DiagnosticLog.shared.write("Servidor escuchando en \(serverAddress).")
     }
 
@@ -559,10 +600,12 @@ class LlamaState: ObservableObject {
     func serverFailed(_ error: Error) {
         DiagnosticLog.shared.write("Error del servidor: \(error.localizedDescription)")
         if serverStarting, let networkError = error as? NWError,
-           case .posix(.EADDRINUSE) = networkError, serverAttempt < 2 {
+           case .posix(.EADDRINUSE) = networkError, serverAttempt + 1 < listeningCandidates.count {
             httpServer.stop()
+            let occupied = listeningCandidates[serverAttempt].rawValue
             serverAttempt += 1
-            DiagnosticLog.shared.write(serverAttempt == 1 ? "Puerto 8080 ocupado. Reintentando." : "Puerto 8080 ocupado. Buscando un puerto libre.")
+            let next = listeningCandidates[serverAttempt].rawValue
+            DiagnosticLog.shared.write(next == 0 ? "Puerto \(occupied) ocupado. Buscando un puerto libre." : "Puerto \(occupied) ocupado. Intentando \(next).")
             serverRetry = Task {
                 do { try await Task.sleep(nanoseconds: 400_000_000) }
                 catch { return }
@@ -603,7 +646,7 @@ class LlamaState: ObservableObject {
             try await llamaContext.completion_init(messages, control: control)
             let prefillEnd = DispatchTime.now().uptimeNanoseconds
             let prompt = Int(await llamaContext.n_cur)
-            let available = Int(await llamaContext.n_len) - prompt
+            let available = llamaContext.contextTokens - prompt
             let limit = min(maxTokens, available)
             var output = 0
             while output < limit {

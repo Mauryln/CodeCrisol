@@ -4,6 +4,8 @@
 
 Usa Qwen 3.5 4B Q4_K_M en el iPad Pro M5 de 12 GB, con Metal, contexto de 4.096 tokens, una petición a la vez y el iPad en primer plano. Anota la build, el nombre exacto del GGUF, la versión de iPadOS, si está cargando batería y la dirección que muestra la app. Conserva el mismo archivo y las mismas peticiones al comparar con Windows o CPU.
 
+Referencia medida en la build 4 con 36 tokens de entrada y 128 de salida. El tiempo al primer texto fue de 901 ms en el calentamiento y 184 ms de mediana en las cinco repeticiones. La salida fue de 39,0 tok/s de mediana desde Windows.
+
 | Prueba | Procedimiento | Qué registrar |
 |---|---|---|
 | Arranque | Tres cargas después de cerrar y volver a abrir la app. Cronometra de **Cargar** a **Listo**. | Tiempo de carga, memoria disponible al inicio y fallos |
@@ -69,3 +71,9 @@ print(f"Mediana: TTFT={statistics.median(s[0] for s in samples):.0f} ms, salida=
 ```
 
 La latencia hasta el primer texto incluye la red y la espera de la API. La tasa calculada se observa desde Windows; los envíos SSE o los tokens que no producen texto visible pueden introducir diferencias. **Diagnóstico** registra el prefill y la tasa de generación observada en el iPad. Usa OpenCode después para medir la experiencia real: sus instrucciones y la generación del título cambian la carga de trabajo.
+
+## Contexto para programación
+
+1. Selecciona **8.192** tokens en la tarjeta del modelo y pulsa **Aplicar y recargar**. Luego inicia la API y verifica el contexto activo en la app o en `GET /v1/models`, campo `context_length`.
+2. Iguala `providers.ipad.models.local.limit.context` en OpenCode al contexto activo. Si cambia el puerto, usa la dirección nueva en `providers.ipad.settings.baseURL`. El reinicio del servidor intenta reutilizar el último puerto disponible.
+3. Repite con **16.384** y **32.768**. En cada paso repite el prompt corto y una petición con aproximadamente la mitad de ese contexto ocupado. Anota tiempo de carga, latencia, tok/s y si hubo fallos de memoria. Prueba **65.536** y **131.072** solo después de confirmar que los pasos anteriores son estables. Cada GGUF tiene su propio límite.

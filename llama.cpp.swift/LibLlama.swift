@@ -72,7 +72,8 @@ actor LlamaContext {
     /// This variable is used to store temporarily invalid cchars
     private var temporary_invalid_cchars: [CChar]
 
-    var n_len: Int32 = 4096
+    nonisolated let contextTokens: Int
+    private var n_len: Int32 { Int32(contextTokens) }
     var n_cur: Int32 = 0
 
     var n_decode: Int32 = 0
@@ -80,6 +81,7 @@ actor LlamaContext {
     init(model: OpaquePointer, context: OpaquePointer) {
         self.model = model
         self.context = context
+        self.contextTokens = Int(llama_n_ctx_seq(context))
         self.tokens_list = []
         self.batch = llama_batch_init(512, 0, 1)
         self.temporary_invalid_cchars = []
@@ -107,7 +109,8 @@ actor LlamaContext {
         }
     }
 
-    static func create_context(url: URL, useMetal: Bool, control: ModelLoadControl) throws -> LlamaContext {
+    static func create_context(url: URL, useMetal: Bool, requestedContext: Int,
+                               control: ModelLoadControl) throws -> LlamaContext {
         try verifyGGUF(url)
         if control.isCancelled { throw CancellationError() }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -147,10 +150,12 @@ actor LlamaContext {
         }
 
         let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
-        DiagnosticLog.shared.write("Inicializando contexto de 4096 tokens con \(n_threads) hilos.")
+        let trained = Int(llama_model_n_ctx_train(model))
+        let contextSize = trained > 0 ? min(requestedContext, trained) : requestedContext
+        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens con \(n_threads) hilos.")
 
         var ctx_params = llama_context_default_params()
-        ctx_params.n_ctx = 4096
+        ctx_params.n_ctx = UInt32(contextSize)
         ctx_params.n_batch = 512
         ctx_params.n_threads       = Int32(n_threads)
         ctx_params.n_threads_batch = Int32(n_threads)
@@ -222,7 +227,6 @@ actor LlamaContext {
         llama_sampler_reset(sampling)
         is_done = false
         tokens_list = tokenize(text: chatPrompt(messages), add_bos: true, parseSpecial: true)
-        n_len = Int32(llama_n_ctx(context))
         guard !tokens_list.isEmpty else { throw LlamaError.invalidPrompt }
         guard tokens_list.count < Int(n_len) else { throw LlamaError.contextExceeded }
         for start in stride(from: 0, to: tokens_list.count, by: 512) {

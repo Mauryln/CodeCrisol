@@ -187,8 +187,13 @@ final class HTTPServer {
 
     private func handleModels(connection: NWConnection) {
         Task { @MainActor in
-            let models: [[String: Any]] = self.llamaState?.hasModel == true
-                ? [["id": "local", "object": "model", "created": 0, "owned_by": "local"]] : []
+            let models: [[String: Any]]
+            if let size = self.llamaState?.activeContextTokens {
+                models = [["id": "local", "object": "model", "created": 0, "owned_by": "local",
+                           "context_length": size]]
+            } else {
+                models = []
+            }
             self.sendResponse(connection: connection, status: "200 OK",
                               body: self.encode(["object": "list", "data": models]), contentType: "application/json")
         }
@@ -304,8 +309,11 @@ final class HTTPServer {
                     (status, message) = ("429 Too Many Requests", "The iPad is already running inference.")
                 case is CancellationError:
                     (status, message) = ("409 Conflict", "Generation cancelled on the iPad.")
-                case LlamaError.contextExceeded, LlamaError.invalidPrompt:
-                    (status, message) = ("400 Bad Request", "Prompt is empty or exceeds the 4096-token context. Start a shorter session.")
+                case LlamaError.contextExceeded:
+                    let size = llamaState.activeContextTokens.map(String.init) ?? "unknown"
+                    (status, message) = ("400 Bad Request", "Prompt exceeds the \(size)-token context. Start a shorter session or load a larger context.")
+                case LlamaError.invalidPrompt:
+                    (status, message) = ("400 Bad Request", "Prompt is empty.")
                 default:
                     (status, message) = ("500 Internal Server Error", "Generation failed.")
                 }
