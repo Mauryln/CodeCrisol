@@ -6,12 +6,16 @@
       "description": "Programación con herramientas de OpenCode y el modelo del iPad",
       "mode": "primary",
       "model": "ipad/local",
-      "system": "Ayuda con el proyecto actual. Usa las herramientas disponibles para actuar y comprueba sus resultados antes de afirmar que un cambio se realizó.",
+      "system": "Lee las reglas del proyecto y localiza el código relevante. Carga una skill si corresponde a la tarea. Usa las herramientas disponibles y comprueba sus resultados antes de afirmar que un cambio se realizó.",
       "permissions": [
         { "action": "*", "resource": "*", "effect": "deny" },
         { "action": "read", "resource": "*", "effect": "allow" },
         { "action": "glob", "resource": "*", "effect": "allow" },
         { "action": "grep", "resource": "*", "effect": "allow" },
+        { "action": "skill", "resource": "*", "effect": "deny" },
+        { "action": "skill", "resource": "codecrisol-diagnostico", "effect": "allow" },
+        { "action": "skill", "resource": "codecrisol-cambio-acotado", "effect": "allow" },
+        { "action": "skill", "resource": "codecrisol-revision-diff", "effect": "allow" },
         { "action": "external_directory", "resource": "*", "effect": "ask" },
         { "action": "edit", "resource": "*", "effect": "ask" },
         { "action": "shell", "resource": "*", "effect": "ask" }
@@ -23,6 +27,7 @@
       "system": "Responde en español a la última petición del usuario. La respuesta es texto de conversación.",
       "permissions": [
         { "action": "*", "resource": "*", "effect": "deny" },
+        { "action": "skill", "resource": "*", "effect": "deny" },
         { "action": "execute", "resource": "*", "effect": "deny" }
       ]
     }

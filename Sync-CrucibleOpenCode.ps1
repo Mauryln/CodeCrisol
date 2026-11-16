@@ -6,6 +6,8 @@ param(
 
     [string]$ConfigPath = (Join-Path $env:USERPROFILE '.config/opencode/opencode.json'),
 
+    [switch]$WithoutSkills,
+
     [switch]$Launch
 )
 
@@ -75,7 +77,22 @@ $modelConfig['capabilities']['input'] = @('text')
 $modelConfig['capabilities']['output'] = @('text')
 $modelConfig['limit']['context'] = $context
 $modelConfig['limit']['output'] = $output
-$config['agents']['ipad-code'] = $example['agents']['ipad-code']
+$codingAgent = $example['agents']['ipad-code']
+$skillPath = Join-Path $PSScriptRoot 'Skills'
+if ($supportsTools -and !$WithoutSkills) {
+    if (!(Test-Path -LiteralPath $skillPath -PathType Container)) {
+        throw "No se encuentra la carpeta de skills de CodeCrisol: $skillPath"
+    }
+    if ($skillPath -notin $config['skills']) {
+        $config['skills'] = @($config['skills'] | Where-Object { $_ }) + $skillPath
+    }
+} else {
+    $codingAgent['system'] = 'Ayuda con el proyecto actual. Usa las herramientas disponibles para actuar y comprueba sus resultados antes de afirmar que un cambio se realizó.'
+    $codingAgent['permissions'] = @($codingAgent['permissions'] | Where-Object {
+        $_['action'] -ne 'skill' -or $_['effect'] -ne 'allow'
+    })
+}
+$config['agents']['ipad-code'] = $codingAgent
 if (!$config['agents']['ipad-chat']) { $config['agents']['ipad-chat'] = $example['agents']['ipad-chat'] }
 
 $absolute = [IO.Path]::GetFullPath($ConfigPath)

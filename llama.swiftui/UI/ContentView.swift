@@ -17,11 +17,11 @@ struct ContentView: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 16) {
                         modelCard.frame(minWidth: 300)
-                        serverCard.frame(minWidth: 300)
+                        serverColumn.frame(minWidth: 300)
                     }
                     VStack(spacing: 16) {
                         modelCard
-                        serverCard
+                        serverColumn
                     }
                 }
                 library
@@ -109,6 +109,20 @@ struct ContentView: View {
                 Toggle("Caché KV compacta (Q8_0)", isOn: $state.compactKV)
                     .font(.subheadline)
                     .disabled(state.busy)
+                DisclosureGroup("Hilos de CPU") {
+                    Picker("Procesamiento de entrada", selection: $state.prefillThreads) {
+                        ForEach(LlamaState.threadOptions, id: \.self) { count in
+                            Text(count == 0 ? "Automático" : count.formatted()).tag(count)
+                        }
+                    }
+                    Picker("Generación", selection: $state.decodeThreads) {
+                        ForEach(LlamaState.threadOptions, id: \.self) { count in
+                            Text(count == 0 ? "Automático" : count.formatted()).tag(count)
+                        }
+                    }
+                }
+                .font(.subheadline)
+                .disabled(state.busy)
                 if state.requestedContextTokens >= 65536 {
                     Text("Los contextos grandes consumen más memoria. Sube por etapas en este iPad.")
                         .font(.footnote)
@@ -171,6 +185,56 @@ struct ContentView: View {
                 }
                     .font(.footnote)
                     .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .panel()
+    }
+
+    private var serverColumn: some View {
+        VStack(spacing: 16) {
+            serverCard
+            agentActivityCard
+        }
+    }
+
+    private var agentActivityCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Actividad del agente", systemImage: "text.alignleft")
+                .font(.headline)
+                .foregroundStyle(accent)
+            if let activity = state.agentActivity {
+                HStack(spacing: 8) {
+                    if activity.isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    }
+                    Text(activity.status)
+                        .font(.subheadline)
+                }
+                if !activity.thought.isEmpty {
+                    Text("Pensamiento del modelo")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ScrollViewReader { reader in
+                        ScrollView {
+                            Text(activity.thought)
+                                .font(.system(.footnote, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Color.clear.frame(height: 1).id("thought-end")
+                        }
+                        .frame(height: 144)
+                        .onAppear { reader.scrollTo("thought-end", anchor: .bottom) }
+                        .onChange(of: activity.thought) { _ in
+                            reader.scrollTo("thought-end", anchor: .bottom)
+                        }
+                    }
+                }
+            } else {
+                Text("Aún no hay peticiones en esta sesión.")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }

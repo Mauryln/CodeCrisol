@@ -24,62 +24,43 @@ Medido el 15 de noviembre de 2026 desde Windows contra la build 7 del iPad Pro M
 | Comparación | Repite la prueba corta y la larga con CPU en el iPad y con el mismo GGUF en Windows. Después prueba un 8B en Metal si interesa evaluar calidad. | Latencia, tok/s, calidad y estabilidad por modelo y motor |
 | Recuperación | Importa un GGUF desde Archivos, arranca el servidor y reinícialo tres veces. Entre ciclos, pide una respuesta. | URL efectiva, petición completada y errores en Diagnóstico |
 
-## Medición desde Windows
+### Registros del 15 de noviembre · Qwen 3.5 9B Q4_K_M
 
-En PowerShell, pega este bloque con la URL que muestra CodeCrisol. La primera petición calienta el modelo. Las cinco restantes muestran cifras individuales y medianas. Si quieres comparar motores, conserva el prompt y el máximo de salida. Un contexto largo se puede probar sustituyendo el prompt por el contenido del mismo archivo de texto en cada equipo.
+| Medición | Entrada | Reutilizados | Prefill | Salida |
+|---|---:|---:|---:|---:|
+| Build 9 · contexto amplio | 122.922 | — | 774,52 s | 128 tokens · 7,4 tok/s |
+| Build 10 · continuación con caché | 30.253 | 29.696 | 2,19 s | 2 tokens |
+| Build 10 · misma continuación sin caché | 30.253 | 0 | 103,52 s | 2 tokens |
+| Build 10 · respuesta larga | 8.695 | 7.680 | 1,10 s | 2.416 tokens · 14,6 tok/s |
+| Build 10 · petición sin prefijo reutilizado | 7.279 | 0 | 21,13 s | 90 tokens |
+| Build 10 · siguiente petición | 7.347 | 7.168 | 36,5 ms | 64 tokens |
+
+En la comparación controlada de la build 10, ambas continuaciones respondieron `LISTO`. El primer texto pasó de 104,04 s a 2,65 s. La API contó 30.253 tokens de entrada en ambos casos. La caché evitó evaluar el 98,2 % del prompt, que siguió ocupando el mismo espacio de contexto. El log tampoco identifica qué cambió entre la petición de 13.958 tokens y la posterior de 7.279, que perdió la reutilización del prefijo.
+
+La salida de 2.416 tokens tomó unos 165 s de generación pese al prefill de 1,10 s. Los logs de la build 10 registran el presupuesto de pensamiento. Las builds con el contador nuevo registran también los tokens generados dentro del bloque de pensamiento con presupuesto, incluidos en el total de salida. Para medir ahorro de tokens, repite una misma tarea de OpenCode en sesiones equivalentes con **Medio** y **Bajo**. Comparte el GGUF, contexto, herramientas y límite de salida entre pruebas. Registra entrada, tokens reutilizados, pensamiento, salida y tiempo total por tarea. Comprueba que ambas ejecuciones completaron la tarea y cuenta las llamadas y reintentos, incluidos los turnos fallidos.
+
+En Metal, la reserva KV a 4.096 tokens pasó de 128 MiB en FP16 a 68 MiB en Q8_0. A 131.072 tokens, Q8_0 reservó 2.176 MiB. La build 10 registró hasta 2,48 GiB de huella del proceso y 7,58 GiB de Metal durante la prueba de 30K. La reserva KV, la huella y el uso de Metal se registran por separado.
+
+## Captura desde Windows
+
+Con Python 3.8 o posterior, ejecuta el script desde el repositorio usando la dirección que muestra el iPad. Deja CodeCrisol visible y pausa otras peticiones durante cada captura.
 
 ```powershell
-$env:CRUCIBLE_API_URL = 'http://192.168.1.62:8080/v1'
-@'
-import json
-import os
-import statistics
-import time
-import urllib.request
-
-url = os.environ["CRUCIBLE_API_URL"].rstrip("/") + "/chat/completions"
-body = {
-    "model": "local",
-    "messages": [{"role": "user", "content": "Enumera 30 consejos prácticos para documentar un proyecto de software. Escribe una oración por consejo."}],
-    "max_tokens": 128,
-    "stream": True,
-    "stream_options": {"include_usage": True},
-}
-samples = []
-for run in range(6):
-    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
-    start = time.perf_counter()
-    first = None
-    last = None
-    usage = {}
-    with urllib.request.urlopen(req, timeout=120) as response:
-        for line in response:
-            if not line.startswith(b"data: "):
-                continue
-            data = line[6:].strip()
-            if data == b"[DONE]":
-                break
-            event = json.loads(data)
-            if "error" in event:
-                raise RuntimeError(event["error"])
-            usage = event.get("usage") or usage
-            if any(c.get("delta", {}).get("content") for c in event.get("choices", [])):
-                last = time.perf_counter()
-                if first is None:
-                    first = last
-    output = usage.get("completion_tokens", 0)
-    if first is None or last is None or output < 2 or last <= first:
-        raise RuntimeError("Respuesta demasiado corta o sin estadísticas")
-    sample = (1000 * (first - start), (output - 1) / (last - first))
-    label = "calentamiento" if run == 0 else str(run)
-    print(f"{label}: TTFT={sample[0]:.0f} ms, salida={sample[1]:.1f} tok/s, entrada={usage['prompt_tokens']}, salida_tokens={output}")
-    if run:
-        samples.append(sample)
-print(f"Mediana: TTFT={statistics.median(s[0] for s in samples):.0f} ms, salida={statistics.median(s[1] for s in samples):.1f} tok/s")
-'@ | python -
+$CrucibleUrl = 'http://192.168.1.62:8080/v1'
+python Benchmark-CodeCrisol.py $CrucibleUrl --label metal-q8-32k-medio --target-tokens 30000
 ```
 
-La latencia hasta el primer texto incluye la red y la espera de la API. La tasa calculada se observa desde Windows; los envíos SSE o los tokens que no producen texto visible pueden introducir diferencias. **Diagnóstico** registra el prefill y la tasa de generación observada en el iPad. Usa OpenCode después para medir la experiencia real: sus instrucciones y la generación del título cambian la carga de trabajo.
+El script registra `GET /v1/models`, el calentamiento y tres respuestas cortas. Calibra el historial con los tokens que devuelve la API, envía una petición para guardar el prefijo y compara la misma continuación con `cache_prompt` activado y desactivado. El resultado esperado en ambas es `LISTO`. Los JSON y CSV de `capture-codecrisol/` se actualizan después de cada petición. Incluyen hora UTC, ID de respuesta, tiempo al primer texto, duración, tokens de entrada y salida, tokens reutilizados, errores y comprobaciones. El objetivo de entrada es aproximado y el script exige que deje al menos 1.024 tokens libres en el contexto anunciado.
+
+Para comparar **Metal con Q8_0 y FP16**, usa el mismo GGUF, contexto y objetivo de entrada y cambia solo la etiqueta y el ajuste de caché. Repite en **32K y 64K** con un objetivo común de 30.000 para medir el efecto de reservar más contexto. Para probar una carga de 64K, sube el objetivo a 60.000 después de confirmar la estabilidad. Prueba cerca de 128K con un objetivo de 120.000 después de pasar las pruebas anteriores. Esas peticiones en frío pueden tardar varios minutos.
+
+Para la referencia en **CPU**, empieza con `--short-only` y luego usa una carga moderada. En **Modelo → Hilos de CPU**, ajusta prefill y generación por separado y pulsa **Aplicar y recargar**. Compara **Automático** con un valor fijo en cada fase manteniendo fija la otra. Usa un historial con caché desactivada para evaluar prefill y la mediana de las respuestas cortas para evaluar generación. Etiqueta cada configuración medida e incluye la build, la versión de iPadOS y si el equipo estaba cargando.
+
+Añade `--check-cancellation` a una captura con el iPad al alcance para detener la generación durante el prefill. El script espera cinco segundos antes de iniciar esa petición y comprueba la cancelación y la respuesta siguiente. Al terminar todas las configuraciones, comparte el archivo de **Diagnóstico → Compartir log** con los informes de Windows. Si CodeCrisol se reinició, comparte también los archivos de esas sesiones desde **Archivos → En mi iPad → CodeCrisol → Logs**. Empareja las peticiones por ID de respuesta o por hora UTC para los fallos anteriores al primer evento SSE. Usa el tiempo del cliente para la experiencia por LAN y el prefill y los tokens por segundo de Diagnóstico para comparar el motor. Compara también el mínimo de memoria disponible, la huella del proceso, el pico de Metal y el estado térmico de cada fase en el log del iPad.
+
+### Calidad y tokens con OpenCode
+
+Usa un proyecto de prueba y una sesión nueva para cada combinación de skills y nivel de pensamiento. Para la referencia con **Medio**, sincroniza el cliente con `-WithoutSkills`. Repite con las skills activas en **Medio** y después en **Bajo**. Repite un fallo con prueba existente, un cambio pequeño con resultado comprobable y una revisión de diff con un defecto conocido. Mantén el mismo modelo, contexto, código inicial, permisos y enunciado. Ejecuta las pruebas fuera de la conversación para confirmar el resultado. Guarda por tarea la hora de inicio y fin, el resultado de las pruebas, las llamadas a herramientas y los reintentos. Suma entrada, caché, pensamiento y salida de las peticiones del intervalo con el registro de Diagnóstico. Incluye los turnos que fallaron.
 
 ## Contexto para programación
 

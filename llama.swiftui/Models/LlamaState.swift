@@ -72,11 +72,20 @@ struct PrefillProgress {
     let cached: Int
 }
 
+struct AgentActivity {
+    let id: UUID
+    var status: String
+    var thought = ""
+    var isRunning = true
+}
+
 private struct ModelProfile: Codable {
     let context: Int
     let metal: Bool
     let compactKV: Bool
     var reasoning: Int
+    var prefillThreads: Int? = nil
+    var decodeThreads: Int? = nil
 }
 
 struct Model: Identifiable {
@@ -175,6 +184,7 @@ private final class ModelDownload: NSObject, URLSessionDownloadDelegate, @unchec
 @MainActor
 class LlamaState: ObservableObject {
     static let contextOptions = [4096, 8192, 16384, 32768, 65536, 131072]
+    static let threadOptions = [0, 2, 4, 6, 8]
     private static let contextPreference = "requestedContextTokens"
     private static let portPreference = "lastListeningPort"
     private static let reasoningPreference = "reasoningLevel"
@@ -187,6 +197,9 @@ class LlamaState: ObservableObject {
     @Published private(set) var activeContextTokens: Int?
     @Published private(set) var activeKVBytes: UInt64?
     @Published private(set) var prefillProgress: PrefillProgress?
+    @Published private(set) var agentActivity: AgentActivity?
+    private var pendingAgentThought = ""
+    private var lastAgentThoughtUpdate: UInt64?
     @Published var requestedContextTokens: Int {
         didSet { UserDefaults.standard.set(requestedContextTokens, forKey: Self.contextPreference) }
     }
@@ -197,6 +210,8 @@ class LlamaState: ObservableObject {
     @Published private(set) var transfer: String?
     @Published private(set) var downloadProgress: DownloadProgress?
     @Published var useMetal = true
+    @Published var prefillThreads = 0
+    @Published var decodeThreads = 0
     @Published var reasoning: ReasoningLevel {
         didSet {
             UserDefaults.standard.set(reasoning.rawValue, forKey: Self.reasoningPreference)
@@ -225,6 +240,8 @@ class LlamaState: ObservableObject {
     private var lastRequestedContext: Int?
     private var lastRequestedMetal: Bool?
     private var lastRequestedCompactKV: Bool?
+    private var lastPrefillThreads: Int?
+    private var lastDecodeThreads: Int?
     private var loadControl: ModelLoadControl?
     private var transferTask: Task<Void, Never>?
     private var activeDownload: ModelDownload?
@@ -238,7 +255,9 @@ class LlamaState: ObservableObject {
     var isGenerating: Bool { generationControl != nil }
     var activeCacheLabel: String { lastRequestedCompactKV == true ? "Q8_0" : "FP16" }
     var hasPendingModelSettings: Bool {
-        hasModel && (lastRequestedContext != requestedContextTokens || lastRequestedMetal != useMetal || lastRequestedCompactKV != compactKV)
+        hasModel && (lastRequestedContext != requestedContextTokens || lastRequestedMetal != useMetal
+                     || lastRequestedCompactKV != compactKV || lastPrefillThreads != prefillThreads
+                     || lastDecodeThreads != decodeThreads)
     }
 
     init() {
@@ -252,7 +271,8 @@ class LlamaState: ObservableObject {
             modelProfiles = decoded
         }
         refreshModels()
-        DiagnosticLog.shared.write("CodeCrisol iniciado. Increased Memory Limit: \(IncreasedMemoryStatus.current.rawValue).")
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "desconocida"
+        DiagnosticLog.shared.write("CodeCrisol iniciado · build \(build) · \(ProcessInfo.processInfo.operatingSystemVersionString) · Increased Memory Limit: \(IncreasedMemoryStatus.current.rawValue).")
     }
 
     func refreshModels() {
@@ -332,6 +352,10 @@ class LlamaState: ObservableObject {
             requestedContextTokens = profile.context
             useMetal = profile.metal
             compactKV = profile.compactKV
+            let savedPrefill = profile.prefillThreads ?? 0
+            let savedDecode = profile.decodeThreads ?? 0
+            prefillThreads = Self.threadOptions.contains(savedPrefill) ? savedPrefill : 0
+            decodeThreads = Self.threadOptions.contains(savedDecode) ? savedDecode : 0
             // Clear the old file identity before applying the new reasoning setting.
             loadedModelFile = nil
             reasoning = ReasoningLevel(rawValue: profile.reasoning) ?? .medium
@@ -347,6 +371,8 @@ class LlamaState: ObservableObject {
         let metal = useMetal
         let requestedContext = requestedContextTokens
         let compactCache = compactKV
+        let batchThreads = prefillThreads
+        let generationThreads = decodeThreads
         loadControl = control
         loadingModel = model.name
         report("Cargando \(model.name)…")
@@ -358,7 +384,9 @@ class LlamaState: ObservableObject {
             }
             do {
                 let context = try await Task.detached(priority: .userInitiated) {
-                    try LlamaContext.create_context(url: url, useMetal: metal, requestedContext: requestedContext, compactKV: compactCache, control: control)
+                    try LlamaContext.create_context(url: url, useMetal: metal, requestedContext: requestedContext,
+                                                    compactKV: compactCache, prefillThreads: batchThreads,
+                                                    decodeThreads: generationThreads, control: control)
                 }.value
                 if control.isCancelled { throw CancellationError() }
                 llamaContext = context
@@ -369,8 +397,11 @@ class LlamaState: ObservableObject {
                 lastRequestedContext = requestedContext
                 lastRequestedMetal = metal
                 lastRequestedCompactKV = compactCache
+                lastPrefillThreads = batchThreads
+                lastDecodeThreads = generationThreads
                 storeProfile(ModelProfile(context: requestedContext, metal: metal, compactKV: compactCache,
-                                          reasoning: reasoning.rawValue), filename: model.filename)
+                                          reasoning: reasoning.rawValue, prefillThreads: batchThreads,
+                                          decodeThreads: generationThreads), filename: model.filename)
                 report("\(model.name) listo · \(metal ? "Metal" : "CPU") · \(context.contextTokens) tokens de contexto")
             } catch is CancellationError {
                 report("Carga cancelada.")
@@ -679,10 +710,31 @@ class LlamaState: ObservableObject {
         serverError = error.localizedDescription
     }
 
+    func appendAgentThought(_ text: String, for id: UUID) {
+        guard let activity = agentActivity, activity.id == id, !text.isEmpty else { return }
+        pendingAgentThought += text
+        let now = DispatchTime.now().uptimeNanoseconds
+        if activity.isRunning, let lastAgentThoughtUpdate, now - lastAgentThoughtUpdate < 125_000_000 {
+            return
+        }
+        flushAgentThought()
+        lastAgentThoughtUpdate = now
+    }
+
+    private func flushAgentThought() {
+        guard !pendingAgentThought.isEmpty else { return }
+        if var activity = agentActivity {
+            activity.thought = String((activity.thought + pendingAgentThought).suffix(4096))
+            agentActivity = activity
+        }
+        pendingAgentThought = ""
+    }
+
     func generate(_ messages: [ChatMessage], maxTokens: Int,
                   fromServer: Bool = false,
                   toolPrompt: String? = nil,
                   usePromptCache: Bool = true,
+                  activityID: UUID? = nil,
                   onText: (String) async throws -> Void) async throws -> CompletionUsage {
         if fromServer, busy {
             guard waitingRequests < 2 else { throw CompletionError.busy }
@@ -700,28 +752,43 @@ class LlamaState: ObservableObject {
         generationControl = control
         let selectedReasoning = reasoning
         busy = true
+        if let activityID {
+            pendingAgentThought = ""
+            lastAgentThoughtUpdate = nil
+            agentActivity = AgentActivity(id: activityID, status: "Procesando entrada…")
+        }
+        func updateActivity(_ status: String, isRunning: Bool = true) {
+            guard let activityID, var activity = agentActivity, activity.id == activityID else { return }
+            activity.status = status
+            activity.isRunning = isRunning
+            agentActivity = activity
+        }
         defer {
+            if activityID != nil { flushAgentThought() }
             generationControl = nil
             prefillProgress = nil
             busy = false
         }
 
+        let requestLabel = activityID.map { "chatcmpl-\($0.uuidString.prefix(8)) · " } ?? ""
+        let started = DispatchTime.now().uptimeNanoseconds
         do {
-            let started = DispatchTime.now().uptimeNanoseconds
             control.sampleMemory(force: true)
             let prep = try await llamaContext.completion_init(messages, toolPrompt: toolPrompt,
                                                                reasoning: selectedReasoning, maxTokens: maxTokens,
                                                                cachePrompt: fromServer && usePromptCache, control: control) { processed, total, cached in
                 self.prefillProgress = PrefillProgress(processed: processed, total: total, cached: cached)
             }
-            control.sampleMemory(force: true)
-            control.logMemoryPeak("Prefill")
-            prefillProgress = nil
             let prefillEnd = DispatchTime.now().uptimeNanoseconds
+            control.sampleMemory(force: true)
+            control.logMemoryPeak("Prefill", request: requestLabel)
+            prefillProgress = nil
+            updateActivity("Generando…")
             let prompt = Int(await llamaContext.n_cur)
             let available = llamaContext.contextTokens - prompt
             let limit = min(maxTokens, available)
             var output = 0
+            let decodeStart = DispatchTime.now().uptimeNanoseconds
             if prep.thought > 0 { try await onText("<think>") }
             while output < limit {
                 try Task.checkCancellation()
@@ -733,26 +800,40 @@ class LlamaState: ObservableObject {
                     break
                 }
                 output += 1
+                if output.isMultiple(of: 8) { control.sampleMemory() }
             }
             let stopped = await llamaContext.is_done
             if !stopped {
                 let tail = await llamaContext.flushText()
                 if !tail.isEmpty { try await onText(tail) }
             }
+            let decodeEnd = DispatchTime.now().uptimeNanoseconds
+            control.sampleMemory(force: true)
+            control.logMemoryPeak("Prefill y generación", request: requestLabel)
             await llamaContext.finishRequest()
             if fromServer {
+                let thoughtTokens = await llamaContext.thoughtTokens
                 let prefillMs = Double(prefillEnd - started) / 1_000_000
-                let decodeSeconds = Double(DispatchTime.now().uptimeNanoseconds - prefillEnd) / NS_PER_S
+                let decodeSeconds = Double(decodeEnd - decodeStart) / NS_PER_S
                 let throughput = decodeSeconds > 0 ? Double(output) / decodeSeconds : 0
-                DiagnosticLog.shared.write(String(format: "Chat completado · entrada %d tokens · caché %d tokens · prefill %.1f ms · salida %d tokens · %.1f tok/s", prompt, prep.cached, prefillMs, output, throughput), source: "API")
+                let finish = stopped ? "stop" : "length"
+                DiagnosticLog.shared.write(requestLabel + String(format: "Chat completado · entrada %d tokens · caché %d tokens · prefill %.1f ms · salida %d tokens · %.1f tok/s · generación %.1f ms", prompt, prep.cached, prefillMs, output, throughput, decodeSeconds * 1000) + " · fin \(finish)", source: "API")
                 if llamaContext.supportsTools {
-                    DiagnosticLog.shared.write("Pensamiento \(selectedReasoning.title) · presupuesto efectivo \(prep.thought) tokens.", source: "API")
+                    DiagnosticLog.shared.write("\(requestLabel)Pensamiento \(selectedReasoning.title) · \(thoughtTokens) tokens generados · presupuesto efectivo \(prep.thought) tokens.", source: "API")
                 }
             }
+            updateActivity("Generación completada · \(prompt.formatted()) tokens de entrada · \(prep.cached.formatted()) reutilizados · \(output.formatted()) de salida", isRunning: false)
             return CompletionUsage(prompt: prompt, cachedPrompt: prep.cached, output: output, finishReason: stopped ? "stop" : "length")
         } catch {
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            let prefillDetail = prefillProgress.map {
+                " · prefill \($0.processed)/\($0.total) tokens · caché \($0.cached)"
+            } ?? ""
+            control.sampleMemory(force: true)
+            control.logMemoryPeak("Generación interrumpida", request: requestLabel)
             await llamaContext.clear()
-            DiagnosticLog.shared.write("Generación interrumpida: \(error.localizedDescription)", source: fromServer ? "API" : "App")
+            updateActivity(error is CancellationError ? "Generación cancelada." : "Generación interrumpida. Consulta Diagnóstico.", isRunning: false)
+            DiagnosticLog.shared.write("\(requestLabel)Generación interrumpida · \(String(format: "%.1f", elapsedMs)) ms\(prefillDetail) · \(error.localizedDescription)", source: fromServer ? "API" : "App")
             throw error
         }
     }

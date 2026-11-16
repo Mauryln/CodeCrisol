@@ -253,11 +253,20 @@ struct ToolOutput {
     private var mode = Mode.text
     private var buffer = ""
     private var block = ""
+    private var thinking = ""
     private(set) var blocks: [String] = []
     let parseTools: Bool
+    private let captureThinking: Bool
 
-    init(parseTools: Bool) {
+    init(parseTools: Bool, captureThinking: Bool = false) {
         self.parseTools = parseTools
+        self.captureThinking = captureThinking
+    }
+
+    mutating func drainThinking() -> String {
+        let captured = thinking
+        thinking = ""
+        return captured
     }
 
     mutating func append(_ piece: String, final: Bool = false) throws -> String {
@@ -298,7 +307,8 @@ struct ToolOutput {
         switch mode {
         case .text: visible += text
         case .tool: block += text
-        case .thinking: break
+        case .thinking:
+            if captureThinking { thinking += text }
         }
     }
 }

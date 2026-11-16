@@ -34,6 +34,8 @@ final class ModelLoadControl: @unchecked Sendable {
     private var lastSample: UInt64 = 0
     private var peakFootprint: UInt64?
     private var peakMetal: UInt64?
+    private var minimumAvailable: UInt64?
+    private var peakThermal = ProcessInfo.ThermalState.nominal.rawValue
 
     func cancel() { lock.withLock { cancelled = true } }
     var isCancelled: Bool { lock.withLock { cancelled } }
@@ -56,17 +58,29 @@ final class ModelLoadControl: @unchecked Sendable {
         }
         guard shouldSample else { return }
         let snapshot = RuntimeMemorySample()
+        let thermal = ProcessInfo.processInfo.thermalState.rawValue
         lock.withLock {
             if let bytes = snapshot.footprint { peakFootprint = max(peakFootprint ?? 0, bytes) }
             if let bytes = snapshot.metalAllocated { peakMetal = max(peakMetal ?? 0, bytes) }
+            minimumAvailable = min(minimumAvailable ?? snapshot.available, snapshot.available)
+            peakThermal = max(peakThermal, thermal)
         }
     }
 
-    func logMemoryPeak(_ phase: String) {
-        let samples = lock.withLock { (peakFootprint, peakMetal) }
+    func logMemoryPeak(_ phase: String, request: String = "") {
+        let samples = lock.withLock { (peakFootprint, peakMetal, minimumAvailable, peakThermal) }
         let footprint = samples.0.map(RuntimeMemorySample.gib) ?? "sin lectura"
         let metal = samples.1.map(RuntimeMemorySample.gib) ?? "sin lectura"
-        DiagnosticLog.shared.write("\(phase) · máximo observado · Huella \(footprint) · Metal \(metal).", source: "Memoria")
+        let available = samples.2.map(RuntimeMemorySample.gib) ?? "sin lectura"
+        let thermal: String
+        switch ProcessInfo.ThermalState(rawValue: samples.3) {
+        case .nominal?: thermal = "nominal"
+        case .fair?: thermal = "moderado"
+        case .serious?: thermal = "grave"
+        case .critical?: thermal = "crítico"
+        default: thermal = "desconocido"
+        }
+        DiagnosticLog.shared.write("\(request)\(phase) · máximo observado · Huella \(footprint) · Metal \(metal) · disponible mínimo \(available) · estado térmico máximo \(thermal).", source: "Memoria")
     }
 }
 
@@ -98,6 +112,7 @@ actor LlamaContext {
     /// This variable is used to store temporarily invalid cchars
     private var temporary_invalid_cchars: [CChar]
     private var remainingThought: Int?
+    private(set) var thoughtTokens = 0
     private var thoughtEndToken: llama_token?
     private var prefixCheckpoint: (tokens: [llama_token], state: Data)?
     nonisolated let kvBytes: UInt64?
@@ -145,6 +160,7 @@ actor LlamaContext {
     }
 
     static func create_context(url: URL, useMetal: Bool, requestedContext: Int, compactKV: Bool,
+                               prefillThreads: Int, decodeThreads: Int,
                                control: ModelLoadControl) throws -> LlamaContext {
         try verifyGGUF(url)
         if control.isCancelled { throw CancellationError() }
@@ -195,16 +211,18 @@ actor LlamaContext {
         }
         control.sampleMemory(force: true)
 
-        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+        let defaultThreads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+        let batchThreads = prefillThreads == 0 ? defaultThreads : prefillThreads
+        let generationThreads = decodeThreads == 0 ? defaultThreads : decodeThreads
         let trained = Int(llama_model_n_ctx_train(model))
         let contextSize = trained > 0 ? min(requestedContext, trained) : requestedContext
-        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens con \(n_threads) hilos y caché KV \(compactKV ? "Q8_0" : "FP16").")
+        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens · hilos prefill \(batchThreads) · hilos generación \(generationThreads) · KV \(compactKV ? "Q8_0" : "FP16").")
 
         var ctx_params = llama_context_default_params()
         ctx_params.n_ctx = UInt32(contextSize)
         ctx_params.n_batch = 512
-        ctx_params.n_threads       = Int32(n_threads)
-        ctx_params.n_threads_batch = Int32(n_threads)
+        ctx_params.n_threads       = Int32(generationThreads)
+        ctx_params.n_threads_batch = Int32(batchThreads)
         ctx_params.offload_kqv = enableGPU
         ctx_params.op_offload = enableGPU
         if compactKV {
@@ -281,6 +299,7 @@ actor LlamaContext {
         is_done = false
         var prompt = toolPrompt ?? chatPrompt(messages)
         remainingThought = nil
+        thoughtTokens = 0
         thoughtEndToken = nil
         if supportsTools, prompt.hasSuffix("<|im_start|>assistant\n") {
             if reasoning.budget(forOutputLimit: maxTokens) > 0 {
@@ -372,6 +391,7 @@ actor LlamaContext {
                 closingThought = true
             } else {
                 remainingThought = remaining - 1
+                thoughtTokens += 1
             }
         }
         if llama_vocab_is_eog(vocab, new_token_id), !closingThought {

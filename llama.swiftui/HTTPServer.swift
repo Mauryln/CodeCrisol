@@ -264,8 +264,9 @@ final class HTTPServer {
                 connection.cancel()
                 return
             }
+            let activityID = UUID()
             let metadata: [String: Any] = [
-                "id": "chatcmpl-\(UUID().uuidString.prefix(8))",
+                "id": "chatcmpl-\(activityID.uuidString.prefix(8))",
                 "object": stream ? "chat.completion.chunk" : "chat.completion",
                 "created": Int(Date().timeIntervalSince1970),
                 "model": "local"
@@ -275,7 +276,7 @@ final class HTTPServer {
             var pendingText = ""
             var lastTextSend: UInt64?
             var textChunks = 0
-            var output = ToolOutput(parseTools: toolChat != nil)
+            var output = ToolOutput(parseTools: toolChat != nil, captureThinking: true)
             func sendChunk(_ delta: [String: Any], finish: String? = nil) async throws {
                 if !started {
                     started = true
@@ -309,10 +310,14 @@ final class HTTPServer {
                     textChunks += 1
                 }
                 let usage = try await llamaState.generate(chat, maxTokens: maxTokens, fromServer: true, toolPrompt: toolPrompt,
-                                                           usePromptCache: reusePrompt) { piece in
-                    try await emit(output.append(piece))
+                                                           usePromptCache: reusePrompt, activityID: activityID) { piece in
+                    let visible = try output.append(piece)
+                    llamaState.appendAgentThought(output.drainThinking(), for: activityID)
+                    try await emit(visible)
                 }
-                try await emit(output.append("", final: true), final: true)
+                let tail = try output.append("", final: true)
+                llamaState.appendAgentThought(output.drainThinking(), for: activityID)
+                try await emit(tail, final: true)
                 let calls = try toolChat?.calls(output.blocks) ?? []
                 let finish = calls.isEmpty ? usage.finishReason : "tool_calls"
                 let counts: [String: Any] = [
