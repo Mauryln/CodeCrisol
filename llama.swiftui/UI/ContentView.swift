@@ -3,10 +3,12 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var state: LlamaState
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showLogs = false
     @State private var showChat = false
     @State private var prompt = ""
     @State private var copied = false
+    @State private var dashboardWidth: CGFloat = 0
     @ScaledMetric(relativeTo: .body) private var activityHeight: CGFloat = 124
     private let accent = Color(red: 0.38, green: 0.91, blue: 0.77)
 
@@ -15,11 +17,13 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
                 memoryCard
-                ViewThatFits(in: .horizontal) {
+                if dashboardWidth >= 616 && !dynamicTypeSize.isAccessibilitySize {
+                    let columnWidth = (dashboardWidth - 16) / 2
                     HStack(alignment: .top, spacing: 16) {
-                        modelCard.frame(minWidth: 300)
-                        serverColumn.frame(minWidth: 300)
+                        modelCard.frame(width: columnWidth)
+                        serverColumn.frame(width: columnWidth)
                     }
+                } else {
                     VStack(spacing: 16) {
                         modelCard
                         serverColumn
@@ -34,6 +38,11 @@ struct ContentView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 28)
             .frame(maxWidth: .infinity)
+        }
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            min(980, geometry.size.width - 48)
+        } action: { width in
+            dashboardWidth = width
         }
         .background(Color(red: 0.05, green: 0.07, blue: 0.10).ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -225,6 +234,17 @@ struct ContentView: View {
     }
 
     private var agentActivityCard: some View {
+        Color.clear
+            .frame(height: activityHeight)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .topLeading) {
+                agentActivityContent
+            }
+            .clipped()
+            .panel()
+    }
+
+    private var agentActivityContent: some View {
         let activity = state.agentActivity
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -262,6 +282,7 @@ struct ContentView: View {
                                 Text(activity.thought)
                                     .font(.system(.footnote, design: .monospaced))
                                     .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         } else {
                             Text("Aún no hay peticiones en esta sesión.")
@@ -289,8 +310,6 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(height: activityHeight, alignment: .topLeading)
-        .panel()
     }
 
     private var serverCard: some View {
