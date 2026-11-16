@@ -12,12 +12,12 @@ enum LlamaError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidModel: return "El archivo no tiene una cabecera GGUF válida."
-        case .couldNotLoadWeights: return "llama.cpp no pudo cargar los pesos. Revisa el registro."
-        case .couldNotInitializeContext: return "llama.cpp no pudo inicializar el contexto. Revisa el registro."
-        case .invalidPrompt: return "El prompt está vacío."
-        case .contextExceeded: return "El prompt excede el contexto."
-        case .decodeFailed: return "llama.cpp no pudo generar la respuesta."
+        case .invalidModel: return stateText("error.gguf")
+        case .couldNotLoadWeights: return stateText("error.weights")
+        case .couldNotInitializeContext: return stateText("error.context")
+        case .invalidPrompt: return stateText("error.empty")
+        case .contextExceeded: return stateText("error.exceeded")
+        case .decodeFailed: return stateText("error.decode")
         }
     }
 }
@@ -119,6 +119,7 @@ actor LlamaContext {
 
     nonisolated let contextTokens: Int
     nonisolated let supportsTools: Bool
+    private let prefillBatch: Int
     private var n_len: Int32 { Int32(contextTokens) }
     var n_cur: Int32 = 0
 
@@ -129,11 +130,13 @@ actor LlamaContext {
         self.context = context
         self.kvBytes = kvBytes
         self.contextTokens = Int(llama_n_ctx_seq(context))
+        let batchSize = llama_n_batch(context)
+        self.prefillBatch = Int(batchSize)
         var architecture = [CChar](repeating: 0, count: 64)
         let length = llama_model_meta_val_str(model, "general.architecture", &architecture, 64)
         self.supportsTools = length > 0 && ["qwen35", "qwen35moe"].contains(String(cString: architecture))
         self.tokens_list = []
-        self.batch = llama_batch_init(512, 0, 1)
+        self.batch = llama_batch_init(Int32(batchSize), 0, 1)
         self.temporary_invalid_cchars = []
         let sparams = llama_sampler_chain_default_params()
         self.sampling = llama_sampler_chain_init(sparams)
@@ -160,7 +163,7 @@ actor LlamaContext {
     }
 
     static func create_context(url: URL, useMetal: Bool, requestedContext: Int, compactKV: Bool,
-                               prefillThreads: Int, decodeThreads: Int,
+                               prefillThreads: Int, decodeThreads: Int, prefillBatch: Int,
                                control: ModelLoadControl) throws -> LlamaContext {
         try verifyGGUF(url)
         if control.isCancelled { throw CancellationError() }
@@ -216,11 +219,12 @@ actor LlamaContext {
         let generationThreads = decodeThreads == 0 ? defaultThreads : decodeThreads
         let trained = Int(llama_model_n_ctx_train(model))
         let contextSize = trained > 0 ? min(requestedContext, trained) : requestedContext
-        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens · hilos prefill \(batchThreads) · hilos generación \(generationThreads) · KV \(compactKV ? "Q8_0" : "FP16").")
+        DiagnosticLog.shared.write("Contexto solicitado: \(requestedContext) tokens. Límite del GGUF: \(trained). Inicializando \(contextSize) tokens · lote prefill \(prefillBatch) · hilos prefill \(batchThreads) · hilos generación \(generationThreads) · KV \(compactKV ? "Q8_0" : "FP16").")
 
         var ctx_params = llama_context_default_params()
         ctx_params.n_ctx = UInt32(contextSize)
-        ctx_params.n_batch = 512
+        ctx_params.n_batch = UInt32(prefillBatch)
+        ctx_params.n_ubatch = UInt32(prefillBatch)
         ctx_params.n_threads       = Int32(generationThreads)
         ctx_params.n_threads_batch = Int32(batchThreads)
         ctx_params.offload_kqv = enableGPU
@@ -340,13 +344,13 @@ actor LlamaContext {
         }
         // Keep the final assistant delimiter out of the snapshot so the prefix can
         // still match when OpenCode serializes the following tool call or message.
-        let checkpointAt = max(0, (tokens_list.count - 64) / 512 * 512)
+        let checkpointAt = max(0, (tokens_list.count - 64) / prefillBatch * prefillBatch)
         await onProgress(cached, tokens_list.count, cached)
-        for start in stride(from: cached, to: tokens_list.count, by: 512) {
+        for start in stride(from: cached, to: tokens_list.count, by: prefillBatch) {
             try Task.checkCancellation()
             if control.isCancelled { throw CancellationError() }
             llama_batch_clear(&batch)
-            let end = min(start + 512, tokens_list.count)
+            let end = min(start + prefillBatch, tokens_list.count)
             for index in start..<end {
                 llama_batch_add(&batch, tokens_list[index], Int32(index), [0], index == tokens_list.count - 1)
             }
@@ -442,21 +446,19 @@ actor LlamaContext {
         for _ in 0..<nr {
             // bench prompt processing
 
-            llama_batch_clear(&batch)
-
-            let n_tokens = pp
-
-            for i in 0..<n_tokens {
-                llama_batch_add(&batch, 0, Int32(i), [0], false)
-            }
-            batch.logits[Int(batch.n_tokens) - 1] = 1 // true
-
             llama_memory_clear(llama_get_memory(context), false)
 
             let t_pp_start = DispatchTime.now().uptimeNanoseconds / 1000;
 
-            if llama_decode(context, batch) != 0 {
-                print("llama_decode() failed during prompt")
+            for start in stride(from: 0, to: pp, by: prefillBatch) {
+                llama_batch_clear(&batch)
+                for position in start..<min(start + prefillBatch, pp) {
+                    llama_batch_add(&batch, 0, Int32(position), [0], position == pp - 1)
+                }
+                if llama_decode(context, batch) != 0 {
+                    print("llama_decode() failed during prompt")
+                    break
+                }
             }
             llama_synchronize(context)
 

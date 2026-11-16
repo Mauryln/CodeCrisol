@@ -14,7 +14,7 @@ struct LoadCustomButton: View {
                 case .success(let url):
                     llamaState.importModel(url)
                 case .failure(let error):
-                    llamaState.report("No se pudo abrir el archivo: \(error.localizedDescription)")
+                    llamaState.report(String(localized: "No se pudo abrir el archivo: \(error.localizedDescription)"))
                 }
             }
     }

@@ -2,6 +2,11 @@ import Foundation
 import Network
 import UIKit
 
+func stateText(_ key: String, _ arguments: CVarArg...) -> String {
+    let format = NSLocalizedString(key, tableName: "State", comment: "")
+    return arguments.isEmpty ? format : String(format: format, locale: Locale.current, arguments: arguments)
+}
+
 final class DiagnosticLog: @unchecked Sendable {
     static let shared = DiagnosticLog()
     private let lock = NSLock()
@@ -86,6 +91,7 @@ private struct ModelProfile: Codable {
     var reasoning: Int
     var prefillThreads: Int? = nil
     var decodeThreads: Int? = nil
+    var prefillBatch: Int? = nil
 }
 
 struct Model: Identifiable {
@@ -108,9 +114,9 @@ struct DownloadProgress {
 
     var detail: String {
         let bytes = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
-        guard let total, let fraction else { return "\(bytes) recibidos" }
+        guard let total, let fraction else { return stateText("download.received", bytes) }
         let size = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
-        return "\(Int(fraction * 100)) % · \(bytes) de \(size)"
+        return stateText("download.progress", Int(fraction * 100).formatted(), bytes, size)
     }
 }
 
@@ -165,7 +171,7 @@ private final class ModelDownload: NSObject, URLSessionDownloadDelegate, @unchec
             let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
                 throw NSError(domain: "Descarga", code: code,
-                              userInfo: [NSLocalizedDescriptionKey: "El servidor respondió HTTP \(code)."])
+                              userInfo: [NSLocalizedDescriptionKey: stateText("download.http", String(code))])
             }
             try LlamaContext.verifyGGUF(location)
             let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -183,8 +189,9 @@ private final class ModelDownload: NSObject, URLSessionDownloadDelegate, @unchec
 
 @MainActor
 class LlamaState: ObservableObject {
-    static let contextOptions = [4096, 8192, 16384, 32768, 65536, 131072]
+    static let contextOptions = [4096, 8192, 16384, 32768, 65536, 98304, 114688, 131072]
     static let threadOptions = [0, 2, 4, 6, 8]
+    static let prefillBatchOptions = [256, 512, 1024]
     private static let contextPreference = "requestedContextTokens"
     private static let portPreference = "lastListeningPort"
     private static let reasoningPreference = "reasoningLevel"
@@ -204,7 +211,7 @@ class LlamaState: ObservableObject {
         didSet { UserDefaults.standard.set(requestedContextTokens, forKey: Self.contextPreference) }
     }
     @Published private(set) var loadingModel: String?
-    @Published private(set) var loadStatus = "Selecciona un archivo GGUF para empezar."
+    @Published private(set) var loadStatus = stateText("model.empty")
     @Published private(set) var stoppingLoad = false
     @Published private(set) var busy = false
     @Published private(set) var transfer: String?
@@ -212,6 +219,7 @@ class LlamaState: ObservableObject {
     @Published var useMetal = true
     @Published var prefillThreads = 0
     @Published var decodeThreads = 0
+    @Published var prefillBatch = 512
     @Published var reasoning: ReasoningLevel {
         didSet {
             UserDefaults.standard.set(reasoning.rawValue, forKey: Self.reasoningPreference)
@@ -242,6 +250,7 @@ class LlamaState: ObservableObject {
     private var lastRequestedCompactKV: Bool?
     private var lastPrefillThreads: Int?
     private var lastDecodeThreads: Int?
+    private var lastPrefillBatch: Int?
     private var loadControl: ModelLoadControl?
     private var transferTask: Task<Void, Never>?
     private var activeDownload: ModelDownload?
@@ -257,7 +266,7 @@ class LlamaState: ObservableObject {
     var hasPendingModelSettings: Bool {
         hasModel && (lastRequestedContext != requestedContextTokens || lastRequestedMetal != useMetal
                      || lastRequestedCompactKV != compactKV || lastPrefillThreads != prefillThreads
-                     || lastDecodeThreads != decodeThreads)
+                     || lastDecodeThreads != decodeThreads || lastPrefillBatch != prefillBatch)
     }
 
     init() {
@@ -290,7 +299,7 @@ class LlamaState: ObservableObject {
             let local = Set(downloadedModels.map(\.filename))
             undownloadedModels = defaultModels.filter { !local.contains($0.filename) }
         } catch {
-            report("No se pudo consultar la biblioteca: \(error.localizedDescription)")
+            report(stateText("library.readFailed", error.localizedDescription))
         }
     }
 
@@ -307,42 +316,47 @@ class LlamaState: ObservableObject {
         Model(
             name: "Qwen 3.5 4B · Q4_K_M",
             url: "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
-            filename: "qwen3.5-4b-Q4_K_M.gguf", source: "Bartowski · Referencia de velocidad", forOpenCode: true
+            filename: "qwen3.5-4b-Q4_K_M.gguf", source: stateText("catalog.speed"), forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q4_K_M",
             url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
-            filename: "Qwen3.5-9B-Q4_K_M.gguf", source: "Unsloth · 5,68 GB", forOpenCode: true
+            filename: "Qwen3.5-9B-Q4_K_M.gguf", source: stateText("catalog.qwenQ4"), forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q3_K_M",
             url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q3_K_M.gguf",
-            filename: "Qwen3.5-9B-Q3_K_M.gguf", source: "Unsloth · 4,67 GB", forOpenCode: true
+            filename: "Qwen3.5-9B-Q3_K_M.gguf", source: stateText("catalog.qwenQ3"), forOpenCode: true
         ),
         Model(
             name: "Qwen 3.5 9B · Q4_K_M",
             url: "https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
-            filename: "LM-Studio-Qwen3.5-9B-Q4_K_M.gguf", source: "LM Studio Community · 5,63 GB", forOpenCode: true
+            filename: "LM-Studio-Qwen3.5-9B-Q4_K_M.gguf", source: stateText("catalog.qwenLM"), forOpenCode: true
+        ),
+        Model(
+            name: "Ornith 1.5 9B · Q4_K_M",
+            url: "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/resolve/main/Ornith-1.5-9B-Q4_K_M.gguf",
+            filename: "Ornith-1.5-9B-Q4_K_M.gguf", source: stateText("catalog.ornith"), forOpenCode: true
         ),
         Model(
             name: "Qwen2.5-Coder 7B Instruct · Q4_K_M",
             url: "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-            filename: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf", source: "Bartowski · 4,68 GB · Código"
+            filename: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf", source: stateText("catalog.coding")
         ),
         Model(
             name: "DeepSeek R1 Distill 7B · Q4_K_M",
             url: "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
-            filename: "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf", source: "Bartowski · 4,68 GB · Razonamiento"
+            filename: "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf", source: stateText("catalog.reasoning")
         ),
         Model(
             name: "DeepSeek Coder V2 Lite Instruct · Q3_K_S",
             url: "https://huggingface.co/bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/DeepSeek-Coder-V2-Lite-Instruct-Q3_K_S.gguf",
-            filename: "DeepSeek-Coder-V2-Lite-Instruct-Q3_K_S.gguf", source: "Bartowski · 7,49 GB · Contexto inicial sugerido de 4K"
+            filename: "DeepSeek-Coder-V2-Lite-Instruct-Q3_K_S.gguf", source: stateText("catalog.lite")
         ),
         Model(
             name: "IBM Granite 4.0 Micro · Q4_K_M",
             url: "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/main/granite-4.0-micro-Q4_K_M.gguf",
-            filename: "granite-4.0-micro-Q4_K_M.gguf", source: "IBM Granite · 2,10 GB · Alternativa ligera"
+            filename: "granite-4.0-micro-Q4_K_M.gguf", source: stateText("catalog.granite")
         )
     ]
 
@@ -356,6 +370,8 @@ class LlamaState: ObservableObject {
             let savedDecode = profile.decodeThreads ?? 0
             prefillThreads = Self.threadOptions.contains(savedPrefill) ? savedPrefill : 0
             decodeThreads = Self.threadOptions.contains(savedDecode) ? savedDecode : 0
+            let savedBatch = profile.prefillBatch ?? 512
+            prefillBatch = Self.prefillBatchOptions.contains(savedBatch) ? savedBatch : 512
             // Clear the old file identity before applying the new reasoning setting.
             loadedModelFile = nil
             reasoning = ReasoningLevel(rawValue: profile.reasoning) ?? .medium
@@ -373,9 +389,10 @@ class LlamaState: ObservableObject {
         let compactCache = compactKV
         let batchThreads = prefillThreads
         let generationThreads = decodeThreads
+        let batchSize = prefillBatch
         loadControl = control
         loadingModel = model.name
-        report("Cargando \(model.name)…")
+        report(stateText("model.loading", model.name))
         Task {
             defer {
                 loadControl = nil
@@ -386,7 +403,8 @@ class LlamaState: ObservableObject {
                 let context = try await Task.detached(priority: .userInitiated) {
                     try LlamaContext.create_context(url: url, useMetal: metal, requestedContext: requestedContext,
                                                     compactKV: compactCache, prefillThreads: batchThreads,
-                                                    decodeThreads: generationThreads, control: control)
+                                                    decodeThreads: generationThreads, prefillBatch: batchSize,
+                                                    control: control)
                 }.value
                 if control.isCancelled { throw CancellationError() }
                 llamaContext = context
@@ -399,14 +417,15 @@ class LlamaState: ObservableObject {
                 lastRequestedCompactKV = compactCache
                 lastPrefillThreads = batchThreads
                 lastDecodeThreads = generationThreads
+                lastPrefillBatch = batchSize
                 storeProfile(ModelProfile(context: requestedContext, metal: metal, compactKV: compactCache,
                                           reasoning: reasoning.rawValue, prefillThreads: batchThreads,
-                                          decodeThreads: generationThreads), filename: model.filename)
-                report("\(model.name) listo · \(metal ? "Metal" : "CPU") · \(context.contextTokens) tokens de contexto")
+                                          decodeThreads: generationThreads, prefillBatch: batchSize), filename: model.filename)
+                report(stateText("model.ready", model.name, metal ? "Metal" : "CPU", context.contextTokens.formatted()))
             } catch is CancellationError {
-                report("Carga cancelada.")
+                report(stateText("model.loadCancelled"))
             } catch {
-                report("Falló la carga de \(model.name): \(error.localizedDescription)")
+                report(stateText("model.loadFailed", model.name, error.localizedDescription))
             }
         }
     }
@@ -426,7 +445,7 @@ class LlamaState: ObservableObject {
         guard let loadControl else { return }
         stoppingLoad = true
         loadControl.cancel()
-        report("Cancelando la carga…")
+        report(stateText("model.cancelling"))
     }
 
     func stopGeneration() {
@@ -441,7 +460,7 @@ class LlamaState: ObservableObject {
         loadedModelFile = nil
         activeContextTokens = nil
         activeKVBytes = nil
-        report("Modelo descargado de la memoria.")
+        report(stateText("model.unloaded"))
     }
 
     func removeModel(_ model: Model) {
@@ -451,7 +470,7 @@ class LlamaState: ObservableObject {
             refreshModels()
             DiagnosticLog.shared.write("Eliminado \(model.filename).")
         } catch {
-            report("No se pudo eliminar el archivo: \(error.localizedDescription)")
+            report(stateText("library.deleteFailed", error.localizedDescription))
         }
     }
 
@@ -459,16 +478,16 @@ class LlamaState: ObservableObject {
         guard transfer == nil, url.scheme?.lowercased() == "https", url.host != nil,
               filename == (filename as NSString).lastPathComponent,
               (filename as NSString).pathExtension.lowercased() == "gguf" else {
-            report("Usa un enlace HTTPS directo a un archivo .gguf.")
+            report(stateText("download.url"))
             return
         }
         let destination = getDocumentsDirectory().appendingPathComponent(filename)
         if FileManager.default.fileExists(atPath: destination.path) {
             refreshModels()
             if downloadedModels.contains(where: { $0.filename == filename }) {
-                report("\(filename) está en «En el iPad». Pulsa Cargar.")
+                report(stateText("download.exists", filename))
             } else {
-                report("Ya existe \(filename), pero no es un archivo GGUF de la biblioteca.")
+                report(stateText("download.conflict", filename))
             }
             return
         }
@@ -491,10 +510,10 @@ class LlamaState: ObservableObject {
                 switch result {
                 case .success:
                     self.refreshModels()
-                    self.report("\(filename) guardado.")
+                    self.report(stateText("download.done", filename))
                 case .failure(let error):
                     let cancelled = (error as? URLError)?.code == .cancelled
-                    self.report(cancelled ? "Descarga cancelada." : "Falló la descarga: \(error.localizedDescription)")
+                    self.report(cancelled ? stateText("download.cancelled") : stateText("download.failed", error.localizedDescription))
                 }
             }
         }
@@ -513,7 +532,7 @@ class LlamaState: ObservableObject {
     func importModel(_ source: URL) {
         guard transfer == nil else { return }
         guard source.pathExtension.lowercased() == "gguf" else {
-            report("Selecciona un archivo con extensión .gguf.")
+            report(stateText("import.extension"))
             return
         }
         transfer = source.lastPathComponent
@@ -558,9 +577,9 @@ class LlamaState: ObservableObject {
                 }
                 let imported = try await withTaskCancellationHandler(operation: { try await copy.value }, onCancel: { copy.cancel() })
                 refreshModels()
-                report(imported ? "Modelo importado: \(source.lastPathComponent)." : "El modelo ya está en la biblioteca.")
+                report(imported ? stateText("import.done", source.lastPathComponent) : stateText("import.exists"))
             } catch {
-                report(Task.isCancelled ? "Importación cancelada." : "Falló la importación: \(error.localizedDescription)")
+                report(Task.isCancelled ? stateText("import.cancelled") : stateText("import.failed", error.localizedDescription))
             }
         }
     }
@@ -755,7 +774,7 @@ class LlamaState: ObservableObject {
         if let activityID {
             pendingAgentThought = ""
             lastAgentThoughtUpdate = nil
-            agentActivity = AgentActivity(id: activityID, status: "Procesando entrada…")
+            agentActivity = AgentActivity(id: activityID, status: stateText("activity.prefill"))
         }
         func updateActivity(_ status: String, isRunning: Bool = true) {
             guard let activityID, var activity = agentActivity, activity.id == activityID else { return }
@@ -783,7 +802,7 @@ class LlamaState: ObservableObject {
             control.sampleMemory(force: true)
             control.logMemoryPeak("Prefill", request: requestLabel)
             prefillProgress = nil
-            updateActivity("Generando…")
+            updateActivity(stateText("activity.decode"))
             let prompt = Int(await llamaContext.n_cur)
             let available = llamaContext.contextTokens - prompt
             let limit = min(maxTokens, available)
@@ -822,7 +841,7 @@ class LlamaState: ObservableObject {
                     DiagnosticLog.shared.write("\(requestLabel)Pensamiento \(selectedReasoning.title) · \(thoughtTokens) tokens generados · presupuesto efectivo \(prep.thought) tokens.", source: "API")
                 }
             }
-            updateActivity("Generación completada · \(prompt.formatted()) tokens de entrada · \(prep.cached.formatted()) reutilizados · \(output.formatted()) de salida", isRunning: false)
+            updateActivity(stateText("activity.done", prompt.formatted(), prep.cached.formatted(), output.formatted()), isRunning: false)
             return CompletionUsage(prompt: prompt, cachedPrompt: prep.cached, output: output, finishReason: stopped ? "stop" : "length")
         } catch {
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
@@ -832,7 +851,7 @@ class LlamaState: ObservableObject {
             control.sampleMemory(force: true)
             control.logMemoryPeak("Generación interrumpida", request: requestLabel)
             await llamaContext.clear()
-            updateActivity(error is CancellationError ? "Generación cancelada." : "Generación interrumpida. Consulta Diagnóstico.", isRunning: false)
+            updateActivity(error is CancellationError ? stateText("activity.cancelled") : stateText("activity.failed"), isRunning: false)
             DiagnosticLog.shared.write("\(requestLabel)Generación interrumpida · \(String(format: "%.1f", elapsedMs)) ms\(prefillDetail) · \(error.localizedDescription)", source: fromServer ? "API" : "App")
             throw error
         }

@@ -43,6 +43,24 @@ En Metal, la reserva KV a 4.096 tokens pasó de 128 MiB en FP16 a 68 MiB en Q8_0
 
 ## Captura desde Windows
 
+### M5 y contexto de más de 100K
+
+La build 11 detectó `Apple M5 GPU` con `has tensor = true` y descargó las 33 capas de Qwen 3.5 9B a Metal. El backend fijado incluye Metal 4 para los kernels que usan la API de tensores. El indicador confirma disponibilidad, y la ganancia de cada GGUF se mide con la misma carga. Apple informa más de 4× en cómputo pico de GPU para IA al comparar M5 con M4. [Metal 4 y aceleradores neuronales del M5](https://developer.apple.com/videos/play/tech-talks/111432/)
+
+| Configuración de la build 11 | Entrada | Reutilizados | Primer texto |
+| --- | ---: | ---: | ---: |
+| 32K, Metal, Q8_0 con prefijo | 29.386 | 29.184 | 1,00 s |
+| 32K, Metal, Q8_0 en frío | 29.386 | 0 | 103,95 s |
+| 64K, Metal, Q8_0 en frío | 29.386 | 0 | 110,48 s |
+| 64K, Metal, FP16 en frío | 29.386 | 0 | 107,76 s |
+| 64K, Metal, Q8_0 en frío | 60.006 | 0 | 272,61 s |
+
+Todas estas peticiones respondieron `LISTO`. En el ensayo de 60K, Q8_0 reservó 1.088 MiB de KV. El diagnóstico registró 6,38 GiB de Metal sobre 8,00 GiB recomendados, 1,43 GiB de huella y temperatura moderada. Las muestras individuales de FP16 y Q8_0 a 64K dieron tiempos cercanos. Para contextos largos, la ventaja observada de Q8_0 es el espacio de memoria. Con esta familia, los 2.176 MiB de KV Q8_0 de la prueba anterior a 131.072 tokens permiten reservar salida por encima de 100K de entrada.
+
+En la build 12, sube de 64K a 96K, 112K y 128K con Metal y Q8_0. **Ajustes de inferencia → Lote de entrada** permite comparar 256, 512 y 1.024. Empieza con el ajuste de referencia de 512 e hilos automáticos. Para evaluar 1.024, conserva el mismo GGUF, contexto, KV e historial y mide prefill, memoria mínima disponible y estado térmico. Un lote mayor también aumenta el trabajo que debe terminar antes de que la app pueda cancelar. Comprueba cancelación y que la continuación reutilice el prefijo con cada configuración.
+
+### Ejecutar la captura
+
 Con Python 3.8 o posterior, ejecuta el script desde el repositorio usando la dirección que muestra el iPad. Deja CodeCrisol visible y pausa otras peticiones durante cada captura.
 
 ```powershell

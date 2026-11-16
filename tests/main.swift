@@ -38,6 +38,15 @@ let hiddenTool = try thoughtWithTool.append("<think><tool_call>interno</tool_cal
 precondition(hiddenTool.isEmpty && thoughtWithTool.blocks.isEmpty)
 precondition(thoughtWithTool.drainThinking() == "<tool_call>interno</tool_call>")
 precondition(thoughtWithTool.drainThinking().isEmpty)
+var duplicateReasoningClose = ToolOutput(parseTools: true, captureThinking: true)
+let beforeDuplicate = try duplicateReasoningClose.append("<think>interno</think>Texto válido</thi")
+let afterDuplicate = try duplicateReasoningClose.append("nk> y respuesta", final: true)
+precondition(beforeDuplicate == "Texto válido" && afterDuplicate == " y respuesta")
+precondition(duplicateReasoningClose.drainThinking() == "interno")
+var toolWithCloseTag = ToolOutput(parseTools: true)
+let embeddedClose = "<function=write>\n<parameter=content>\n</think>\n</parameter>\n</function>"
+let toolWithCloseTagText = try toolWithCloseTag.append("<tool_call>\(embeddedClose)</tool_call>", final: true)
+precondition(toolWithCloseTagText.isEmpty && toolWithCloseTag.blocks == [embeddedClose])
 let calls = try chat.calls(output.blocks)
 precondition(calls.count == 1 && calls[0].name == "write")
 let arguments = try JSONSerialization.jsonObject(with: Data(calls[0].arguments.utf8)) as! [String: Any]

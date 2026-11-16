@@ -20,6 +20,8 @@
 		AA000001AABB000000000001 /* HTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001AABB000000000002 /* HTTPServer.swift */; };
 		AA000001AABB000000000003 /* ToolChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001AABB000000000004 /* ToolChat.swift */; };
 		AA000001AABB000000000005 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001AABB000000000006 /* MemoryDiagnostics.swift */; };
+		AA000002AABB000000000001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = AA000002AABB000000000003 /* Localizable.strings */; };
+		AA000002AABB000000000002 /* State.strings in Resources */ = {isa = PBXBuildFile; fileRef = AA000002AABB000000000004 /* State.strings */; };
 		DD84C9FD2D747FED007778EC /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD84C9FC2D747FED007778EC /* llama.xcframework */; };
 		DD84C9FE2D747FED007778EC /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DD84C9FC2D747FED007778EC /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F1FE20E22B465ECA00B45541 /* LoadCustomButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1FE20E12B465EC900B45541 /* LoadCustomButton.swift */; };
@@ -54,6 +56,10 @@
 		AA000001AABB000000000002 /* HTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPServer.swift; sourceTree = "<group>"; };
 		AA000001AABB000000000004 /* ToolChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolChat.swift; sourceTree = "<group>"; };
 		AA000001AABB000000000006 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
+		AA000002AABB000000000005 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		AA000002AABB000000000006 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		AA000002AABB000000000007 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/State.strings; sourceTree = "<group>"; };
+		AA000002AABB000000000008 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/State.strings; sourceTree = "<group>"; };
 		DD84C9FC2D747FED007778EC /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = "llama.cpp/build-apple/llama.xcframework"; sourceTree = "<group>"; };
 		DF2D2FE72B4A59BE00FCB72D /* llama.cpp */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = llama.cpp; path = llama.cpp; sourceTree = "<group>"; };
 		F1FE20E12B465EC900B45541 /* LoadCustomButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadCustomButton.swift; sourceTree = "<group>"; };
@@ -122,6 +128,8 @@
 			isa = PBXGroup;
 			children = (
 				8A3F84112AC4BD8C005E2EE8 /* models */,
+				AA000002AABB000000000003 /* Localizable.strings */,
+				AA000002AABB000000000004 /* State.strings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -201,9 +209,10 @@
 			};
 			buildConfigurationList = 8A1C836E2AC328BD0096AF73 /* Build configuration list for PBXProject "llama.swiftui" */;
 			compatibilityVersion = "Xcode 14.0";
-			developmentRegion = en;
+			developmentRegion = es;
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				es,
 				en,
 				Base,
 			);
@@ -226,6 +235,8 @@
 			files = (
 				8A3F84242AC4C891005E2EE8 /* models in Resources */,
 				8A1C837B2AC328BE0096AF73 /* Assets.xcassets in Resources */,
+				AA000002AABB000000000001 /* Localizable.strings in Resources */,
+				AA000002AABB000000000002 /* State.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -250,6 +261,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXVariantGroup section */
+		AA000002AABB000000000003 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				AA000002AABB000000000005 /* es */,
+				AA000002AABB000000000006 /* en */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+		AA000002AABB000000000004 /* State.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				AA000002AABB000000000007 /* es */,
+				AA000002AABB000000000008 /* en */,
+			);
+			name = State.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		8A1C837F2AC328BE0096AF73 /* Debug */ = {
@@ -378,7 +410,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = llama.swiftui/CrucibleLLM.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = K5UQJPP73A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -412,7 +444,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = llama.swiftui/CrucibleLLM.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = K5UQJPP73A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;

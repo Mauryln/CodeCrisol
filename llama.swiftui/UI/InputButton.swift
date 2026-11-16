@@ -16,7 +16,7 @@ struct InputButton: View {
                 Button("Cancelar", role: .cancel) {}
                 Button("Descargar") {
                     guard let url = URL(string: link.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-                        llamaState.report("El enlace al modelo no es válido.")
+                        llamaState.report(String(localized: "El enlace al modelo no es válido."))
                         return
                     }
                     llamaState.download(url, filename: url.lastPathComponent)

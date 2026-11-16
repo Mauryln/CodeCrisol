@@ -39,8 +39,8 @@ Use `http://YOUR_IPAD_IP:8080/v1` as the base URL. The API supports text chat, `
 ## OpenCode en Windows
 
 1. Instala el IPA compilado y firmado en tu iPad. Conecta el PC y el iPad a la misma red de confianza. El servidor usa HTTP en la LAN.
-2. En **View Models**, descarga y carga **Qwen3-8B Q4_K_M**. Puedes empezar con el Qwen de 4B para probar antes la conexión.
-3. Pulsa **Start Server** y deja la app visible. Copia la dirección que aparece y añade `/v1`.
+2. En **Biblioteca GGUF**, descarga y carga **Qwen 3.5 9B Q4_K_M**. Puedes empezar con la variante 4B para probar antes la conexión.
+3. Pulsa **Iniciar servidor** y deja la app visible. Copia la dirección completa que aparece, incluida la terminación `/v1`.
 4. En el proyecto que abrirás con OpenCode 2.x, copia [opencode.example.jsonc](opencode.example.jsonc) a `opencode.jsonc` o integra el proveedor `ipad` y el agente `ipad-chat` en tu configuración existente. Sustituye la IP de ejemplo por la del iPad.
 5. Prueba con `opencode run --agent ipad-chat --model ipad/local "Responde solo con OK."`
 
@@ -58,7 +58,28 @@ El script consulta `/v1/models`, sincroniza el contexto efectivo y abre el agent
 
 El iPad genera las llamadas y OpenCode las ejecuta en Windows. El agente puede leer y buscar en el proyecto, escribir o editar archivos y ejecutar comandos para trabajar con archivos y directorios. OpenCode aplica sus permisos de edición y shell y devuelve el resultado al modelo.
 
-El contexto de 4.096 tokens incluye instrucciones de OpenCode, historial y respuesta. Si pruebas con un prompt largo, empieza una sesión nueva para liberar contexto. El servidor acepta una generación a la vez y devuelve HTTP 429 si está ocupado.
+El contexto efectivo incluye las instrucciones de OpenCode, el historial y la respuesta. Si pruebas con un prompt largo, empieza una sesión nueva para liberar contexto. El servidor acepta una generación a la vez y devuelve HTTP 429 si está ocupado.
+
+### Más modelos de programación
+
+Para usar un modelo que requiere más memoria que la disponible en el iPad, ejecútalo en la estación de trabajo o en otro equipo con un servidor compatible con **Chat Completions** y llamadas a herramientas. El script crea un proveedor y un agente `<proveedor>-code` con las mismas skills y permisos que `ipad-code`. Puedes alternar entre ellos sin cambiar el destino del iPad.
+
+```powershell
+$sync = 'C:/ruta/a/CodeCrisol/Sync-CrucibleOpenCode.ps1'
+
+# Ejemplo para un runtime local como LM Studio en Windows.
+& $sync -BaseUrl http://127.0.0.1:1234/v1 -ProviderId coder-windows `
+    -ModelId 'id-del-modelo-en-models' -ContextLength 32768 -SupportsTools -Launch
+
+# Ejemplo para vLLM u otro runtime en un servidor de inferencia en la LAN.
+& $sync -BaseUrl http://gpu-host:8000/v1 -ProviderId coder-servidor `
+    -ModelId 'id-del-modelo-en-models' -ContextLength 65536 -SupportsTools
+opencode mini --standalone --agent coder-servidor-code --model coder-servidor/id-del-modelo-en-models
+```
+
+Usa el ID exacto publicado en `GET /models` bajo la URL base. Si el servidor lista un solo modelo puedes omitir `-ModelId`. `-ContextLength` se puede omitir cuando el servidor anuncia el contexto efectivo en `context_length`. Usa `-SupportsTools` si el servidor no anuncia `supports_tools` y has confirmado que el modelo y su plantilla aceptan llamadas estructuradas.
+
+Un servicio remoto también puede registrarse con una URL HTTPS. Si exige una clave, usa `-ApiKeyEnv NOMBRE_DE_VARIABLE` con una variable ya disponible en el entorno de PowerShell. El archivo de configuración guarda el nombre de la variable. El servicio seleccionado recibe las peticiones de la sesión, que pueden incluir código y resultados de herramientas según la tarea y los permisos. [Proveedores personalizados de OpenCode](https://opencode.ai/docs/providers/#custom)
 
 ## Diagnóstico en el iPad
 

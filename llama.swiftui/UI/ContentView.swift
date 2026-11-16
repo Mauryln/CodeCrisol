@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showChat = false
     @State private var prompt = ""
     @State private var copied = false
+    @ScaledMetric(relativeTo: .body) private var activityHeight: CGFloat = 124
     private let accent = Color(red: 0.38, green: 0.91, blue: 0.77)
 
     var body: some View {
@@ -25,7 +26,7 @@ struct ContentView: View {
                     }
                 }
                 library
-                Link("Gracias a CrucibleLLM, la base de CodeCrisol.",
+                Link("CodeCrisol se basa en Crucible LLM Server",
                      destination: URL(string: "https://github.com/vidaliya/crucible-llm-server")!)
                     .font(.footnote)
             }
@@ -46,7 +47,7 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("SERVIDOR LOCAL", systemImage: "cpu")
+            Label("SERVIDOR LOCAL PARA CÓDIGO", systemImage: "cpu")
                 .font(.system(.caption, design: .monospaced, weight: .semibold))
                 .tracking(3)
                 .foregroundStyle(accent)
@@ -63,13 +64,14 @@ struct ContentView: View {
             Label("Modelo", systemImage: "memorychip")
                 .font(.headline)
                 .foregroundStyle(accent)
-            Text(state.loadingModel ?? state.loadedModel ?? "Sin modelo cargado")
+            Text(state.loadingModel ?? state.loadedModel ?? String(localized: "Sin modelo cargado"))
                 .font(.title3.weight(.semibold))
             Text(state.loadStatus)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if state.hasModel {
-                Label(state.supportsTools ? "Herramientas disponibles · ipad-code" : "Chat de texto · ipad-chat",
+                let capability: LocalizedStringKey = state.supportsTools ? "Herramientas disponibles · ipad-code" : "Chat de texto · ipad-chat"
+                Label(capability,
                       systemImage: state.supportsTools ? "hammer" : "text.bubble")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -109,21 +111,30 @@ struct ContentView: View {
                 Toggle("Caché KV compacta (Q8_0)", isOn: $state.compactKV)
                     .font(.subheadline)
                     .disabled(state.busy)
-                DisclosureGroup("Hilos de CPU") {
-                    Picker("Procesamiento de entrada", selection: $state.prefillThreads) {
+                DisclosureGroup("Ajustes de inferencia") {
+                    Picker("Hilos para procesar entrada", selection: $state.prefillThreads) {
                         ForEach(LlamaState.threadOptions, id: \.self) { count in
-                            Text(count == 0 ? "Automático" : count.formatted()).tag(count)
+                            Text(count == 0 ? String(localized: "Automático") : count.formatted()).tag(count)
                         }
                     }
-                    Picker("Generación", selection: $state.decodeThreads) {
+                    Picker("Hilos de generación", selection: $state.decodeThreads) {
                         ForEach(LlamaState.threadOptions, id: \.self) { count in
-                            Text(count == 0 ? "Automático" : count.formatted()).tag(count)
+                            Text(count == 0 ? String(localized: "Automático") : count.formatted()).tag(count)
+                        }
+                    }
+                    Picker("Lote de entrada", selection: $state.prefillBatch) {
+                        ForEach(LlamaState.prefillBatchOptions, id: \.self) { count in
+                            Text("\(count.formatted()) tokens").tag(count)
                         }
                     }
                 }
                 .font(.subheadline)
                 .disabled(state.busy)
-                if state.requestedContextTokens >= 65536 {
+                if state.requestedContextTokens > 100_000 {
+                    Text("Con más de 100.000 tokens, Q8_0 deja más memoria disponible para Metal.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if state.requestedContextTokens >= 65_536 {
                     Text("Los contextos grandes consumen más memoria. Sube por etapas en este iPad.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -147,16 +158,23 @@ struct ContentView: View {
     }
 
     private var reasoningControl: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Pensamiento · \(state.reasoning.title)").font(.subheadline.weight(.medium))
+        let title: String
+        switch state.reasoning {
+        case .low: title = String(localized: "Bajo")
+        case .medium: title = String(localized: "Medio")
+        case .high: title = String(localized: "Alto")
+        }
+        return VStack(alignment: .leading, spacing: 5) {
+            Text("Pensamiento · \(title)").font(.subheadline.weight(.medium))
             Slider(value: Binding(get: { Double(state.reasoning.rawValue) }, set: { value in
                 if let level = ReasoningLevel(rawValue: Int(value)) { state.reasoning = level }
             }), in: 0...2, step: 1)
             .accessibilityLabel("Nivel de pensamiento")
-            .accessibilityValue(state.reasoning.title)
+            .accessibilityValue(title)
             .disabled(state.hasModel && !state.supportsTools)
-            Text(state.hasModel && !state.supportsTools ? "Disponible con Qwen 3.5." :
-                    "Bajo: directo · Medio: hasta 128 tokens · Alto: hasta 512 tokens")
+            let description: LocalizedStringKey = state.hasModel && !state.supportsTools ? "Disponible con Qwen 3.5." :
+                "Bajo sin pensamiento · Medio hasta 128 tokens · Alto hasta 512 tokens"
+            Text(description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -167,7 +185,7 @@ struct ContentView: View {
             Label("Memoria", systemImage: "memorychip")
                 .font(.headline)
                 .foregroundStyle(accent)
-            Text("Increased Memory Limit · \(IncreasedMemoryStatus.current.rawValue)")
+            Text("Increased Memory Limit · \(memoryEntitlementStatus)")
                 .font(.subheadline)
             TimelineView(.periodic(from: .now, by: 2)) { _ in
                 let memory = RuntimeMemorySample()
@@ -191,6 +209,14 @@ struct ContentView: View {
         .panel()
     }
 
+    private var memoryEntitlementStatus: String {
+        switch IncreasedMemoryStatus.current {
+        case .enabled: return String(localized: "Activado en la firma")
+        case .disabled: return String(localized: "Desactivado en la firma")
+        case .unknown: return String(localized: "Firma no verificable")
+        }
+    }
+
     private var serverColumn: some View {
         VStack(spacing: 16) {
             serverCard
@@ -199,54 +225,83 @@ struct ContentView: View {
     }
 
     private var agentActivityCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Actividad del agente", systemImage: "text.alignleft")
-                .font(.headline)
-                .foregroundStyle(accent)
-            if let activity = state.agentActivity {
-                HStack(spacing: 8) {
-                    if activity.isRunning {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityHidden(true)
-                    }
-                    Text(activity.status)
-                        .font(.subheadline)
+        let activity = state.agentActivity
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Actividad del agente", systemImage: "text.alignleft")
+                    .font(.headline)
+                    .foregroundStyle(accent)
+                Spacer()
+                Button(role: .destructive) { state.stopGeneration() } label: {
+                    Image(systemName: "stop.fill")
                 }
-                if !activity.thought.isEmpty {
-                    Text("Pensamiento del modelo")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ScrollViewReader { reader in
-                        ScrollView {
-                            Text(activity.thought)
-                                .font(.system(.footnote, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(height: 1).id("thought-end")
+                .accessibilityLabel("Detener generación")
+                .buttonStyle(.bordered)
+                .opacity(activity?.isRunning == true ? 1 : 0)
+                .disabled(activity?.isRunning != true)
+                .accessibilityHidden(activity?.isRunning != true)
+            }
+            ScrollViewReader { reader in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let activity {
+                            HStack(spacing: 8) {
+                                if activity.isRunning && state.prefillProgress == nil {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityHidden(true)
+                                }
+                                Text(activity.status).font(.subheadline)
+                            }
+                            .id("activity-status")
+                            if activity.isRunning { prefillIndicator }
+                            if !activity.thought.isEmpty {
+                                Text("Pensamiento del modelo")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(activity.thought)
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .textSelection(.enabled)
+                            }
+                        } else {
+                            Text("Aún no hay peticiones en esta sesión.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
-                        .frame(height: 144)
-                        .onAppear { reader.scrollTo("thought-end", anchor: .bottom) }
-                        .onChange(of: activity.thought) { _ in
-                            reader.scrollTo("thought-end", anchor: .bottom)
-                        }
+                        Color.clear.frame(height: 1).id("thought-end")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onAppear {
+                    if activity?.isRunning == true, activity?.thought.isEmpty == false {
+                        reader.scrollTo("thought-end", anchor: .bottom)
                     }
                 }
-            } else {
-                Text("Aún no hay peticiones en esta sesión.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                .onChange(of: activity?.thought) { thought in
+                    if activity?.isRunning == true, thought?.isEmpty == false {
+                        reader.scrollTo("thought-end", anchor: .bottom)
+                    }
+                }
+                .onChange(of: activity?.isRunning) { running in
+                    if running == false {
+                        reader.scrollTo("activity-status", anchor: .top)
+                    }
+                }
             }
         }
+        .frame(height: activityHeight, alignment: .topLeading)
         .panel()
     }
 
     private var serverCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let serverStatus: LocalizedStringKey = state.serverRunning ? "Activo" : state.serverStarting ? "Iniciando…" : "Detenido"
+        let serverAction: LocalizedStringKey = state.serverRunning ? "Detener servidor" : state.serverStarting ? "Cancelar inicio" : "Iniciar servidor"
+        let copyAction: LocalizedStringKey = copied ? "Copiada" : "Copiar dirección"
+        return VStack(alignment: .leading, spacing: 14) {
             Label("API de red", systemImage: "network")
                 .font(.headline)
                 .foregroundStyle(accent)
-            Label(state.serverRunning ? "Activo" : state.serverStarting ? "Iniciando…" : "Detenido",
+            Label(serverStatus,
                   systemImage: state.serverRunning ? "circle.fill" : "circle")
                 .font(.title3.weight(.semibold))
             if state.serverRunning {
@@ -257,16 +312,17 @@ struct ContentView: View {
                     UIPasteboard.general.string = state.serverAddress
                     copied = true
                 } label: {
-                    Label(copied ? "Copiada" : "Copiar dirección", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    Label(copyAction, systemImage: copied ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
             } else {
-                Text(state.serverError ?? (state.hasModel ? "Comparte este modelo con clientes de tu red local." : "Carga un modelo para habilitar la API."))
+                Text(state.serverError ?? (state.hasModel ? String(localized: "Conecta OpenCode a este modelo por la red local.") :
+                                          String(localized: "Carga un modelo para habilitar la API.")))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             HStack {
-                Button(state.serverRunning ? "Detener servidor" : state.serverStarting ? "Cancelar inicio" : "Iniciar servidor") {
+                Button(serverAction) {
                     copied = false
                     state.toggleServer()
                 }
@@ -279,11 +335,6 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-            }
-            if state.isGenerating {
-                prefillIndicator
-                Button("Detener generación", role: .destructive) { state.stopGeneration() }
-                    .buttonStyle(.bordered)
             }
         }
         .panel()
@@ -326,7 +377,8 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(state.downloadProgress == nil ? "Importando modelo" : "Descargando modelo")
+                            let transferStatus: LocalizedStringKey = state.downloadProgress == nil ? "Importando modelo" : "Descargando modelo"
+                            Text(transferStatus)
                                 .font(.headline)
                             Text(transfer).lineLimit(1).foregroundStyle(.secondary)
                         }
@@ -342,7 +394,7 @@ struct ContentView: View {
                         }
                         TimelineView(.periodic(from: .now, by: 1)) { timeline in
                             let seconds = max(0, Int(timeline.date.timeIntervalSince(progress.lastUpdate)))
-                            Text(seconds >= 10 ? "\(progress.detail) · Sin datos nuevos hace \(seconds) s" : progress.detail)
+                            Text(seconds >= 10 ? String(localized: "\(progress.detail) · Sin datos nuevos hace \(seconds) s") : progress.detail)
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }
@@ -366,7 +418,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func catalogSection(_ title: String, models: [Model]) -> some View {
+    private func catalogSection(_ title: LocalizedStringKey, models: [Model]) -> some View {
         if !models.isEmpty {
             Text(title).font(.headline)
             ForEach(models) { model in

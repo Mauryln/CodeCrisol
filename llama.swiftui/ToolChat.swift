@@ -275,7 +275,7 @@ struct ToolOutput {
         while !buffer.isEmpty {
             let markers: [String]
             switch mode {
-            case .text: markers = parseTools ? ["<think>", "<tool_call>"] : ["<think>"]
+            case .text: markers = parseTools ? ["<think>", "</think>", "<tool_call>"] : ["<think>", "</think>"]
             case .thinking: markers = ["</think>"]
             case .tool: markers = ["</tool_call>"]
             }
